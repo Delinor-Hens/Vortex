@@ -7,7 +7,15 @@ class VortexCore:
         if dll_path is None:
             dll_path = os.path.join(os.path.dirname(__file__), '..', 'build', 'vortex_core.dll')
         dll_path = os.path.abspath(dll_path)
-        self.dll = ctypes.CDLL(dll_path)
+        try:
+            self.dll = ctypes.CDLL(dll_path)
+            print("[DEBUG] DLL успешно загружена", flush=True)
+        except OSError as e:
+            print(f"[ОШИБКА] Не удалось загрузить DLL: {e}", flush=True)
+            # Попробуем получить более детальную информацию о зависимостях
+            import subprocess
+            subprocess.run(["objdump", "-p", dll_path, "|", "findstr", "DLL Name"], shell=True)
+            raise
 
         # Инициализация и завершение
         self.dll.vortex_init.argtypes = [ctypes.c_char_p]

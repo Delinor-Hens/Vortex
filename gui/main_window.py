@@ -35,8 +35,8 @@ class MainWindow(tk.Tk):
 
         self.minigame_window = None
         self.minigame_after_id = None
-
-        self.attachments = []  # список путей к прикреплённым файлам
+        self.attachments = []
+        self.pending_message = None   # для сообщений, отправленных во время прогрева
 
         self._load_music_volume()
         self._setup_styles()
@@ -54,8 +54,7 @@ class MainWindow(tk.Tk):
         except:
             pass
 
-        self._show_loading_overlay()
-        self._set_input_state(False)
+        # Запускаем прогрев и экран загрузки
         self._start_warmup()
 
     # ---------- Вспомогательные методы ----------
@@ -323,7 +322,7 @@ class MainWindow(tk.Tk):
             messagebox.showerror("Vortex", f"Не удалось установить {runtime.name}. Попробуйте вручную.")
         self._refresh_runtime_list()
 
-    # ---------- Управление генерацией ----------
+    # ---------- Режимы генерации ----------
     def _set_generation_mode(self, mode):
         self.core.set_generation_mode(mode)
         self.mode_var.set(mode)
@@ -337,7 +336,40 @@ class MainWindow(tk.Tk):
             else:
                 btn.configure(style="TButton")
 
-    # ---------- Экран загрузки ----------
+    # ---------- Экран загрузки и мини-игра при прогреве ----------
+    def _start_warmup(self):
+        self._show_loading_overlay()
+        self._set_input_state(False)
+
+        # Таймер на открытие мини-игры, если прогрев затянется
+        self.warmup_minigame_after_id = self.after(10000, self._show_minigame_during_warmup)
+
+        def warmup():
+            try:
+                self.core.warmup()
+            except Exception as e:
+                print(f"[DEBUG] Warmup error: {e}")
+            finally:
+                self.warmup_done = True
+                self.after(0, self._on_warmup_complete)
+        threading.Thread(target=warmup, daemon=True).start()
+
+    def _on_warmup_complete(self):
+        if hasattr(self, 'warmup_minigame_after_id'):
+            self.after_cancel(self.warmup_minigame_after_id)
+            del self.warmup_minigame_after_id
+
+        if self.minigame_window:
+            self._on_minigame_close()
+
+        self._hide_loading_overlay()
+        self._set_input_state(True)
+
+        if self.pending_message:
+            msg, images = self.pending_message
+            self.pending_message = None
+            self._send_worker(msg, images)
+
     def _show_loading_overlay(self):
         self.loading_overlay = tk.Frame(self, bg="#121212")
         self.loading_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
@@ -365,7 +397,6 @@ class MainWindow(tk.Tk):
         if hasattr(self, 'loading_overlay'):
             self.loading_overlay.destroy()
             del self.loading_overlay
-        self._set_input_state(True)
 
     def _set_input_state(self, enabled):
         state = tk.NORMAL if enabled else tk.DISABLED
@@ -373,18 +404,10 @@ class MainWindow(tk.Tk):
         self.send_button.config(state=state)
         self.attach_button.config(state=state)
 
-    def _start_warmup(self):
-        def warmup():
-            try:
-                self.core.warmup()
-            except Exception as e:
-                print(f"[DEBUG] Warmup error: {e}")
-            finally:
-                self.warmup_done = True
-                self.after(0, self._hide_loading_overlay)
-        threading.Thread(target=warmup, daemon=True).start()
+    def _show_minigame_during_warmup(self):
+        self._show_minigame()
 
-    # ---------- Прогресс-бар ----------
+    # ---------- Управление прогресс-баром ----------
     def _start_progress(self):
         self.progress.start(15)
 
@@ -482,7 +505,6 @@ class MainWindow(tk.Tk):
         )
         if file_path:
             self.attachments.append(file_path)
-            # Показываем имя файла рядом с полем ввода (можно добавить отдельную метку)
             if not hasattr(self, 'attachment_label'):
                 self.attachment_label = ttk.Label(self.chat_frame, text="")
                 self.attachment_label.pack(anchor='w', padx=12, pady=(0,5))
@@ -492,7 +514,18 @@ class MainWindow(tk.Tk):
     # ---------- Отправка сообщений ----------
     def _send(self):
         if not self.warmup_done:
+            # Сохраняем сообщение и показываем подсказку
+            msg = self.entry.get().strip()
+            if not msg:
+                return
+            self.pending_message = (msg, [])   # изображения пока не обрабатываем
+            self.entry.delete(0, tk.END)
+            self._append_message("Вы", msg, "user")
+            self._start_progress()
+            self.send_button.config(state=tk.DISABLED)
+            self.attach_button.config(state=tk.DISABLED)
             return
+
         print(f"[DEBUG] Нажата кнопка отправки, current_chat_id={self.current_chat_id}")
         if self.current_chat_id < 0:
             print("[DEBUG] Нет активного чата, пробуем создать")
@@ -523,7 +556,6 @@ class MainWindow(tk.Tk):
             else:
                 messagebox.showwarning("Vortex", f"Тип файла {ext} не поддерживается.")
 
-        # Добавляем тексты файлов в сообщение
         if file_texts:
             msg += "\n\nПрикреплённые файлы:\n" + "\n".join(file_texts)
 
@@ -533,22 +565,18 @@ class MainWindow(tk.Tk):
         self.send_button.config(state=tk.DISABLED)
         self.attach_button.config(state=tk.DISABLED)
 
-        # Очищаем вложения
         self.attachments.clear()
         if hasattr(self, 'attachment_label'):
             self.attachment_label.config(text="")
 
-        print("[DEBUG] Запуск потока отправки...")
         threading.Thread(target=self._send_worker, args=(msg, images_base64), daemon=True).start()
 
     def _send_worker(self, msg, images_base64):
         self._start_minigame_timer()
         try:
             if images_base64:
-                # Отправляем с изображениями (если есть поддержка в DLL)
                 response = self.core.send_message_with_images(msg, images_base64)
             else:
-                # Обычная отправка (потоковая для Ollama)
                 if self.core.get_active_provider() == 0:  # Ollama
                     self.core.start_stream(msg)
                     self.after(0, self._start_stream_message)

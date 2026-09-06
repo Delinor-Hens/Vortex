@@ -46,7 +46,6 @@ static std::wstring EncryptString(const std::wstring& plainText) {
     if (!CryptProtectData(&inBlob, L"Vortex API Key", NULL, NULL, NULL, CRYPTPROTECT_UI_FORBIDDEN, &outBlob))
         return L"";
 
-    // Конвертируем бинарные данные в hex-строку
     std::wstring encrypted;
     encrypted.reserve(outBlob.cbData * 2);
     for (DWORD i = 0; i < outBlob.cbData; ++i) {
@@ -62,7 +61,6 @@ static std::wstring EncryptString(const std::wstring& plainText) {
 static std::wstring DecryptString(const std::wstring& encryptedHex) {
     if (encryptedHex.empty()) return L"";
 
-    // Переводим hex-строку в бинарные данные
     size_t len = encryptedHex.size() / 2;
     std::vector<BYTE> data(len);
     for (size_t i = 0; i < len; ++i) {
@@ -237,7 +235,6 @@ std::wstring MemoryStore::getActiveProviderApiKey() const {
     std::lock_guard<std::mutex> lock(m_mutex);
     for (const auto& p : m_providers) {
         if (p.type == m_activeProvider) {
-            // Расшифровываем ключ
             return DecryptString(p.apiKey);
         }
     }
@@ -260,7 +257,6 @@ void MemoryStore::setProviderConfig(ProviderType type, const std::wstring& name,
         if (p.type == type) {
             p.name = name;
             p.baseUrl = baseUrl;
-            // Шифруем ключ перед сохранением
             p.apiKey = EncryptString(apiKey);
             p.model = model;
             break;
@@ -273,7 +269,6 @@ ProviderConfig MemoryStore::getProviderConfig(ProviderType type) const {
     for (const auto& p : m_providers) {
         if (p.type == type) {
             ProviderConfig config = p;
-            // Расшифровываем ключ для возврата
             config.apiKey = DecryptString(p.apiKey);
             return config;
         }
@@ -286,7 +281,6 @@ std::vector<ProviderConfig> MemoryStore::getAllProviderConfigs() const {
     std::vector<ProviderConfig> result;
     for (const auto& p : m_providers) {
         ProviderConfig config = p;
-        // Расшифровываем ключ
         config.apiKey = DecryptString(p.apiKey);
         result.push_back(config);
     }
@@ -298,6 +292,7 @@ bool MemoryStore::saveToFile(const std::string& filename) {
     std::lock_guard<std::mutex> lock(m_mutex);
     std::wofstream file(filename, std::ios::binary);
     if (!file) return false;
+    // ВАЖНО: не вызываем imbue, чтобы избежать 0xc00000ff
 
     file << m_model << L"\n";
     file << m_mode << L"\n";
@@ -309,8 +304,7 @@ bool MemoryStore::saveToFile(const std::string& filename) {
         file << static_cast<int>(p.type) << L"\n";
         file << p.name << L"\n";
         file << p.baseUrl << L"\n";
-        // apiKey уже зашифрован, просто сохраняем
-        file << p.apiKey << L"\n";
+        file << p.apiKey << L"\n";   // уже зашифрован
         file << p.model << L"\n";
     }
 
@@ -330,6 +324,7 @@ bool MemoryStore::loadFromFile(const std::string& filename) {
     std::lock_guard<std::mutex> lock(m_mutex);
     std::wifstream file(filename, std::ios::binary);
     if (!file) return false;
+    // ВАЖНО: не вызываем imbue
 
     std::getline(file, m_model);
     std::getline(file, m_mode);
@@ -353,7 +348,7 @@ bool MemoryStore::loadFromFile(const std::string& filename) {
         p.type = static_cast<ProviderType>(typeInt);
         std::getline(file, p.name);
         std::getline(file, p.baseUrl);
-        std::getline(file, p.apiKey); // уже зашифрован
+        std::getline(file, p.apiKey);
         std::getline(file, p.model);
         m_providers.push_back(p);
     }
