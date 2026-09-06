@@ -23,18 +23,6 @@ VORTEX_API int vortex_set_generation_mode(const char* mode_name);
 VORTEX_API char* vortex_get_current_model();
 VORTEX_API char* vortex_get_current_mode();
 VORTEX_API char* vortex_get_current_generation_mode();
-
-// Новые функции для провайдеров
-VORTEX_API int vortex_set_active_provider(int provider_type);
-VORTEX_API int vortex_get_active_provider();
-VORTEX_API int vortex_set_provider_config(int provider_type,
-                                          const char* name,
-                                          const char* base_url,
-                                          const char* api_key,
-                                          const char* model);
-VORTEX_API char* vortex_get_provider_list();        // JSON-массив провайдеров
-VORTEX_API char* vortex_get_active_provider_info();  // JSON с информацией о текущем провайдере
-
 VORTEX_API int vortex_warmup();
 
 VORTEX_API int vortex_create_chat(const char* chat_name);
@@ -44,10 +32,22 @@ VORTEX_API char* vortex_get_chats();
 VORTEX_API char* vortex_get_history();
 
 VORTEX_API char* vortex_send_message(const char* user_message);
+VORTEX_API char* vortex_send_message_with_images(const char* user_message, const char** images_base64, int image_count);
 
 VORTEX_API int vortex_start_stream(const char* user_message);
 VORTEX_API char* vortex_get_stream_chunk();
 VORTEX_API int vortex_is_generating();
+
+// Новые функции для провайдеров
+VORTEX_API int vortex_set_active_provider(int provider_type);
+VORTEX_API int vortex_get_active_provider();
+VORTEX_API int vortex_set_provider_config(int provider_type,
+                                          const char* name,
+                                          const char* base_url,
+                                          const char* api_key,
+                                          const char* model);
+VORTEX_API char* vortex_get_provider_list();
+VORTEX_API char* vortex_get_active_provider_info();
 
 VORTEX_API void vortex_free_string(char* str);
 

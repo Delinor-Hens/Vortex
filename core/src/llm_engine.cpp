@@ -216,6 +216,16 @@ std::wstring generateBlocking(const std::wstring& model,
                               const std::wstring& systemPrompt,
                               const std::wstring& generationMode,
                               std::wstring* errorMsg) {
+    // Используем общую функцию с пустым списком изображений
+    return generateBlockingWithImages(model, prompt, systemPrompt, {}, generationMode, errorMsg);
+}
+
+std::wstring generateBlockingWithImages(const std::wstring& model,
+                                        const std::wstring& prompt,
+                                        const std::wstring& systemPrompt,
+                                        const std::vector<std::string>& imagesBase64,
+                                        const std::wstring& generationMode,
+                                        std::wstring* errorMsg) {
     ensureNetworkInitialized();
 
     std::string utf8model = wstring_to_utf8(model);
@@ -272,7 +282,22 @@ std::wstring generateBlocking(const std::wstring& model,
                            "\",\"stream\":false,\"think\":false,\"system\":\"" + escapedSystem +
                            "\",\"options\":{\"num_predict\":" + std::to_string(numPredict) +
                            ",\"temperature\":" + std::to_string(temperature) +
-                           ",\"top_p\":" + std::to_string(topP) + "}}";
+                           ",\"top_p\":" + std::to_string(topP) + "}";
+
+    // Добавляем изображения, если есть
+    if (!imagesBase64.empty()) {
+        // Находим позицию перед "options" и вставляем "images"
+        size_t pos = jsonBody.find("\"options\"");
+        if (pos != std::string::npos) {
+            std::string imagesJson = "\"images\":[";
+            for (size_t i = 0; i < imagesBase64.size(); ++i) {
+                if (i > 0) imagesJson += ",";
+                imagesJson += "\"" + imagesBase64[i] + "\"";
+            }
+            imagesJson += "],";
+            jsonBody.insert(pos, imagesJson);
+        }
+    }
 
     std::string response = httpPostOllamaGenerate(jsonBody);
 
@@ -417,13 +442,11 @@ bool generateStreamingOllama(const std::wstring& model,
             body.append(recvBuf, received);
         }
 
-        // Обрабатываем полученные чанки (каждый JSON-объект на новой строке)
         size_t pos;
         while ((pos = body.find('\n')) != std::string::npos) {
             std::string line = body.substr(0, pos);
             body.erase(0, pos + 1);
             if (line.empty()) continue;
-            // Извлекаем "response"
             std::wstring chunk = extractResponse(line);
             if (!chunk.empty()) {
                 chunkCallback(chunk);

@@ -221,7 +221,24 @@ class VortexCore:
                 except:
                     return []
         return []
+    def send_message_with_images(self, user_message, images_base64):
+        if not images_base64:
+            return self.send_message(user_message)
 
+        arr = (ctypes.c_char_p * len(images_base64))()
+        for i, img in enumerate(images_base64):
+            arr[i] = img.encode('utf-8')
+
+        ptr = self.dll.vortex_send_message_with_images(
+            user_message.encode('utf-8'),
+            arr,
+            len(images_base64)
+        )
+        if not ptr:
+            return None
+        result = ctypes.string_at(ptr).decode('utf-8')
+        self._free(ptr)
+        return result
     # ---------- Отправка сообщений ----------
     def send_message(self, user_message):
         ptr = self.dll.vortex_send_message(user_message.encode('utf-8'))

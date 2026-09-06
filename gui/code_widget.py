@@ -2,6 +2,10 @@
 import tkinter as tk
 from tkinter import ttk, scrolledtext
 import threading
+import os
+import subprocess
+import tempfile
+import shutil
 
 class CodeWidget(ttk.Frame):
     def __init__(self, master, core):
@@ -49,7 +53,8 @@ class CodeWidget(ttk.Frame):
             ("Генерировать код", self._generate_code),
             ("Объяснить код", self._explain_code),
             ("Исправить ошибки", self._fix_code),
-            ("Оптимизировать", self._optimize_code)
+            ("Оптимизировать", self._optimize_code),
+            ("▶ Запустить", self._run_code)
         ]
         for text, cmd in actions:
             ttk.Button(btn_frame, text=text, command=cmd, style="Code.TButton").pack(side=tk.LEFT, padx=2)
@@ -127,3 +132,70 @@ class CodeWidget(ttk.Frame):
 
     def _optimize_code(self):
         self._run_action("optimize")
+
+    # ---------- Запуск кода ----------
+    def _run_code(self):
+        language = self.language_var.get()
+        code = self.code_input.get("1.0", tk.END).strip()
+        if not code:
+            self._set_output("Нет кода для запуска.")
+            return
+
+        temp_dir = tempfile.mkdtemp()
+        try:
+            if language == "Python":
+                file_path = os.path.join(temp_dir, "script.py")
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(code)
+                cmd = f'python "{file_path}"'
+            elif language == "JavaScript":
+                file_path = os.path.join(temp_dir, "script.js")
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(code)
+                cmd = f'node "{file_path}"'
+            elif language == "C++":
+                file_path = os.path.join(temp_dir, "main.cpp")
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(code)
+                exe_path = os.path.join(temp_dir, "app.exe")
+                compile_cmd = f'g++ "{file_path}" -o "{exe_path}"'
+                subprocess.run(compile_cmd, shell=True, check=False, capture_output=True, timeout=10)
+                cmd = f'"{exe_path}"'
+            elif language == "Java":
+                file_path = os.path.join(temp_dir, "Main.java")
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(code)
+                compile_cmd = f'javac "{file_path}"'
+                subprocess.run(compile_cmd, shell=True, check=False, capture_output=True, timeout=10)
+                class_name = os.path.splitext(os.path.basename(file_path))[0]
+                cmd = f'java -cp "{temp_dir}" {class_name}'
+            elif language == "C#":
+                # Простейший вариант: dotnet run в отдельной папке с файлом Program.cs
+                file_path = os.path.join(temp_dir, "Program.cs")
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(code)
+                cmd = f'dotnet run --project "{temp_dir}"'
+            elif language == "Go":
+                file_path = os.path.join(temp_dir, "main.go")
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(code)
+                cmd = f'go run "{file_path}"'
+            elif language == "Rust":
+                file_path = os.path.join(temp_dir, "main.rs")
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(code)
+                cmd = f'rustc "{file_path}" -o "{temp_dir}/app.exe" && "{temp_dir}/app.exe"'
+            else:
+                self._set_output(f"Запуск для языка {language} пока не поддерживается.")
+                return
+
+            # Запускаем процесс с таймаутом
+            process = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
+            output = process.stdout + process.stderr
+            self._set_output(output if output else "Программа завершилась без вывода.")
+        except subprocess.TimeoutExpired:
+            self._set_output("Превышено время выполнения (10 секунд).")
+        except Exception as e:
+            self._set_output(f"Ошибка: {e}")
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)

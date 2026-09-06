@@ -59,12 +59,12 @@ git checkout develop    # переключиться на develop
 Перейдите в корень проекта и выполните:
 
 ```bat
-g++ -shared -o build\vortex_core.dll core\src\api_bridge.cpp core\src\llm_engine.cpp core\src\memory_store.cpp core\src\text_processor.cpp core\src\providers.cpp -DVORTEX_CORE_EXPORTS -std=c++11 -mwindows -static-libgcc -static-libstdc++ -lws2_32 -lwinhttp -lcrypt32 -Icore/include
+g++ -shared -o build\vortex_core.dll core\src\api_bridge.cpp core\src\llm_engine.cpp core\src\memory_store.cpp core\src\text_processor.cpp core\src\providers.cpp -DVORTEX_CORE_EXPORTS -std=c++11 -mwindows -static -lws2_32 -lwinhttp -lcrypt32 -Icore/include
 ```
 
 **Важно:**  
-- `-static-libgcc -static-libstdc++` обязательно, иначе DLL будет требовать `libgcc_s_seh-1.dll` на чистых системах.  
-- Если вы не используете облачных провайдеров, можно убрать `providers.cpp` и библиотеки `-lwinhttp -lcrypt32`, но тогда провайдеры не будут работать.
+- Используйте **`-static`** (а не `-static-libgcc -static-libstdc++`), чтобы избежать зависимости от `libwinpthread-1.dll`.  
+- Если не используете облачных провайдеров, можно убрать `providers.cpp` и библиотеки `-lwinhttp -lcrypt32`, но тогда провайдеры не будут работать.
 
 Результат: `build\vortex_core.dll`.
 
@@ -78,14 +78,23 @@ g++ -shared -o build\vortex_core.dll core\src\api_bridge.cpp core\src\llm_engine
 pip install pyinstaller
 ```
 
-### 5.2. Соберите exe
+### 5.2. Очистите старые артефакты PyInstaller
+
+```bat
+rmdir /s /q build
+rmdir /s /q dist
+```
+
+**Примечание:** это не удаляет `build\vortex_core.dll`, а только рабочие папки PyInstaller.
+
+### 5.3. Соберите exe
 
 ```bat
 python -m PyInstaller --onefile --windowed --add-binary "build/vortex_core.dll;build" --add-data "assets;assets" --add-data "config.json;." vortex.py
 ```
 
 Результат: `dist\vortex.exe`.  
-Этот exe уже самодостаточен и не требует Python или MinGW.
+Этот exe самодостаточен и не требует Python или MinGW.
 
 ---
 
@@ -94,7 +103,7 @@ python -m PyInstaller --onefile --windowed --add-binary "build/vortex_core.dll;b
 Некоторые версии используют `vortex_launcher.cpp` для запуска `dist\vortex.exe`. Соберите его так:
 
 ```bat
-g++ vortex_launcher.cpp -o Vortex.exe -municode -mwindows -static -static-libgcc -static-libstdc++ -lole32 -lshell32 -luuid -lshlwapi -lcomctl32
+g++ vortex_launcher.cpp -o Vortex.exe -municode -mwindows -static -lole32 -lshell32 -luuid -lshlwapi -lcomctl32
 ```
 
 Убедитесь, что в коде используется `wWinMain`, иначе будет ошибка линковки.
@@ -103,26 +112,22 @@ g++ vortex_launcher.cpp -o Vortex.exe -municode -mwindows -static -static-libgcc
 
 ## 7. Сборка установщика
 
-Если вы меняли исходники установщика (`vortex_setup.cpp`), пересоберите его:
-
 ```bat
-g++ vortex_setup.cpp -o vortex_setup.exe -municode -mwindows -static -static-libgcc -static-libstdc++ -lole32 -lshell32 -luuid -lshlwapi -lcomctl32 -loleaut32 -lurlmon
+g++ vortex_setup.cpp -o vortex_setup.exe -municode -mwindows -static -lole32 -lshell32 -luuid -lshlwapi -lcomctl32 -loleaut32 -lurlmon
 ```
 
 ---
 
 ## 8. Обновление data-файлов установщика
 
-Установщик использует файлы `data0` и `data1` для распаковки приложения.
-
 1. Удалите старые `data0` и `data1` рядом с `vortex_setup.exe`.
 2. Положите рядом с установщиком папку `Vortex`, содержащую:
    - `Vortex.exe` (лаунчер или PyInstaller exe)
-   - `dist\vortex.exe` (если используется лаунчер)
+   - `dist\vortex.exe`
    - `build\vortex_core.dll`
    - `assets\`
    - `config.json`
-   - `gui\` (если нужно для отладки)
+   - (опционально) `gui\`
 3. Запустите `vortex_setup.exe`. Он автоматически создаст новые `data0`/`data1`.
 
 ---
@@ -137,7 +142,7 @@ objdump -p dist\vortex.exe | findstr "DLL Name"
 objdump -p vortex_setup.exe | findstr "DLL Name"
 ```
 
-В выводах не должно быть строк `libgcc_s_seh-1.dll` и `libstdc++-6.dll`.
+В выводах не должно быть строк `libgcc_s_seh-1.dll`, `libstdc++-6.dll`, `libwinpthread-1.dll`.
 
 Также протестируйте на чистой Windows (виртуальная машина или второй ПК), чтобы убедиться, что всё работает.
 

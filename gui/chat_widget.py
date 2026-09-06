@@ -1,6 +1,8 @@
 # gui/chat_widget.py
 import tkinter as tk
-import threading
+import base64
+import os
+import tempfile
 
 class ChatWidget(tk.Text):
     def __init__(self, master, **kwargs):
@@ -14,11 +16,13 @@ class ChatWidget(tk.Text):
                        insertbackground="#ffffff", selectbackground="#6c5ce7")
 
         self._animation_job = None
+        self._image_refs = []  # чтобы сборщик мусора не удалял изображения
 
     def clear(self):
         self.configure(state=tk.NORMAL)
         self.delete("1.0", tk.END)
         self.configure(state=tk.DISABLED)
+        self._image_refs.clear()
 
     def append_message(self, sender, text, tag, animated=False):
         if animated:
@@ -37,6 +41,28 @@ class ChatWidget(tk.Text):
                 self._insert_instant("Vortex", content, "assistant")
             else:
                 self._insert_instant("Система", content, "system")
+
+    def add_image(self, image_base64):
+        """Вставляет изображение в чат (для пользователя)."""
+        try:
+            image_data = base64.b64decode(image_base64)
+            # Сохраняем во временный файл
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+            temp_file.write(image_data)
+            temp_file.close()
+
+            photo = tk.PhotoImage(file=temp_file.name)
+            self._image_refs.append(photo)  # сохраняем ссылку
+
+            self.configure(state=tk.NORMAL)
+            self.image_create(tk.END, image=photo)
+            self.insert(tk.END, "\n")
+            self.configure(state=tk.DISABLED)
+            self.see(tk.END)
+
+            os.unlink(temp_file.name)
+        except Exception as e:
+            print(f"[DEBUG] Ошибка вставки изображения: {e}")
 
     def _insert_instant(self, sender, text, tag):
         self.configure(state=tk.NORMAL)
@@ -74,9 +100,7 @@ class ChatWidget(tk.Text):
         delay = 20
         self._animation_job = self.after(delay, self._animate_chars, text, tag, index+1)
 
-    # ---------- Методы для потоковой передачи ----------
     def start_stream_message(self, sender, tag):
-        """Начинает новое сообщение от ассистента для потокового вывода."""
         if self._animation_job:
             self.after_cancel(self._animation_job)
             self._animation_job = None
@@ -87,7 +111,6 @@ class ChatWidget(tk.Text):
         self.see(tk.END)
 
     def append_stream_chunk(self, text, tag):
-        """Добавляет очередной чанк к текущему сообщению."""
         self.configure(state=tk.NORMAL)
         self.insert(tk.END, text, tag)
         self.configure(state=tk.DISABLED)

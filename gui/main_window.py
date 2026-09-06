@@ -1,17 +1,22 @@
 # gui/main_window.py
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import threading
 import ctypes
 import os
 import sys
 import json
 import random
+import base64
+import shutil
+import subprocess
+import tempfile
 from .core_wrapper import VortexCore
 from .chat_widget import ChatWidget
 from .code_widget import CodeWidget
 from .minigames import SnakeGame, Game2048, TicTacToe
 from .theme_window import ThemeWindow
+from .runtime_manager import RUNTIMES
 
 class MainWindow(tk.Tk):
     def __init__(self, core: VortexCore):
@@ -30,6 +35,8 @@ class MainWindow(tk.Tk):
 
         self.minigame_window = None
         self.minigame_after_id = None
+
+        self.attachments = []  # список путей к прикреплённым файлам
 
         self._load_music_volume()
         self._setup_styles()
@@ -112,6 +119,7 @@ class MainWindow(tk.Tk):
         except:
             pass
 
+    # ---------- Стили и темы ----------
     def _setup_styles(self):
         style = ttk.Style()
         style.theme_use("clam")
@@ -167,7 +175,6 @@ class MainWindow(tk.Tk):
                   foreground=[("readonly", fg)])
 
     def apply_theme(self, theme):
-        """Применяет тему ко всему интерфейсу."""
         self.current_theme = theme.get("name", "Custom")
         bg = theme["bg"]
         fg = theme["fg"]
@@ -195,6 +202,7 @@ class MainWindow(tk.Tk):
         if hasattr(self, 'model_label'):
             self.model_label.configure(foreground=fg)
 
+    # ---------- Построение интерфейса ----------
     def _build_ui(self):
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill=tk.BOTH, expand=True)
@@ -206,6 +214,11 @@ class MainWindow(tk.Tk):
         # Вкладка "Код"
         self.code_widget = CodeWidget(self.notebook, self.core)
         self.notebook.add(self.code_widget, text="Код")
+
+        # Вкладка "Плагины"
+        self.plugins_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.plugins_frame, text="Плагины")
+        self._build_plugins_ui()
 
         self._build_chat_ui()
 
@@ -240,6 +253,9 @@ class MainWindow(tk.Tk):
         self.entry.bind("<Return>", lambda e: self._send())
         self.entry.focus_set()
 
+        self.attach_button = ttk.Button(bottom, text="📎", command=self._attach_file)
+        self.attach_button.pack(side=tk.LEFT, padx=(5,0))
+
         self.send_button = ttk.Button(bottom, text="Отправить",
                                       style="Accent.TButton", command=self._send)
         self.send_button.pack(side=tk.LEFT, padx=(8,0))
@@ -258,7 +274,56 @@ class MainWindow(tk.Tk):
 
         self._update_mode_buttons()
 
-    # ---------- Логика чата ----------
+    def _build_plugins_ui(self):
+        ttk.Label(self.plugins_frame, text="Среды выполнения", font=("Segoe UI", 12, "bold")).pack(anchor='w', padx=10, pady=5)
+        ttk.Button(self.plugins_frame, text="Проверить все", command=self._check_all_runtimes).pack(anchor='w', padx=10, pady=5)
+
+        self.runtime_list_frame = ttk.Frame(self.plugins_frame)
+        self.runtime_list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        self.plugin_progress = ttk.Progressbar(self.plugins_frame, mode='indeterminate')
+        self.plugin_progress.pack(fill=tk.X, padx=10, pady=5)
+        self.plugin_progress.stop()
+
+        self._refresh_runtime_list()
+
+    def _refresh_runtime_list(self):
+        for widget in self.runtime_list_frame.winfo_children():
+            widget.destroy()
+
+        for runtime in RUNTIMES:
+            row = ttk.Frame(self.runtime_list_frame)
+            row.pack(fill=tk.X, pady=2)
+
+            detected = runtime.detect()
+            status = "✅" if detected else "❌"
+            ttk.Label(row, text=f"{status} {runtime.name}").pack(side=tk.LEFT)
+
+            if detected:
+                version = runtime.get_version()
+                ttk.Label(row, text=version, foreground="#888888").pack(side=tk.LEFT, padx=5)
+            else:
+                ttk.Button(row, text="Установить", command=lambda r=runtime: self._install_runtime(r)).pack(side=tk.RIGHT)
+
+    def _check_all_runtimes(self):
+        self._refresh_runtime_list()
+
+    def _install_runtime(self, runtime):
+        self.plugin_progress.start(10)
+        def worker():
+            success = runtime.install()
+            self.after(0, self._on_runtime_installed, runtime, success)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_runtime_installed(self, runtime, success):
+        self.plugin_progress.stop()
+        if success:
+            messagebox.showinfo("Vortex", f"{runtime.name} успешно установлен!")
+        else:
+            messagebox.showerror("Vortex", f"Не удалось установить {runtime.name}. Попробуйте вручную.")
+        self._refresh_runtime_list()
+
+    # ---------- Управление генерацией ----------
     def _set_generation_mode(self, mode):
         self.core.set_generation_mode(mode)
         self.mode_var.set(mode)
@@ -306,6 +371,7 @@ class MainWindow(tk.Tk):
         state = tk.NORMAL if enabled else tk.DISABLED
         self.entry.config(state=state)
         self.send_button.config(state=state)
+        self.attach_button.config(state=state)
 
     def _start_warmup(self):
         def warmup():
@@ -406,6 +472,23 @@ class MainWindow(tk.Tk):
         from .settings_window import SettingsWindow
         SettingsWindow(self, self.core)
 
+    # ---------- Прикрепление файлов ----------
+    def _attach_file(self):
+        file_path = filedialog.askopenfilename(
+            title="Выберите файл",
+            filetypes=[("Все поддерживаемые", "*.png *.jpg *.jpeg *.gif *.bmp *.txt *.md *.py *.cpp *.js"),
+                       ("Изображения", "*.png *.jpg *.jpeg *.gif *.bmp"),
+                       ("Текстовые", "*.txt *.md *.py *.cpp *.js")]
+        )
+        if file_path:
+            self.attachments.append(file_path)
+            # Показываем имя файла рядом с полем ввода (можно добавить отдельную метку)
+            if not hasattr(self, 'attachment_label'):
+                self.attachment_label = ttk.Label(self.chat_frame, text="")
+                self.attachment_label.pack(anchor='w', padx=12, pady=(0,5))
+            names = [os.path.basename(p) for p in self.attachments]
+            self.attachment_label.config(text="📎 " + ", ".join(names))
+
     # ---------- Отправка сообщений ----------
     def _send(self):
         if not self.warmup_done:
@@ -422,26 +505,60 @@ class MainWindow(tk.Tk):
         if not msg:
             print("[DEBUG] Пустое сообщение")
             return
+
+        # Обрабатываем вложения
+        images_base64 = []
+        file_texts = []
+        for path in self.attachments:
+            ext = os.path.splitext(path)[1].lower()
+            if ext in ['.png', '.jpg', '.jpeg', '.gif', '.bmp']:
+                with open(path, 'rb') as f:
+                    images_base64.append(base64.b64encode(f.read()).decode('utf-8'))
+            elif ext in ['.txt', '.md', '.py', '.cpp', '.js', '.java', '.cs']:
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        file_texts.append(f.read())
+                except UnicodeDecodeError:
+                    messagebox.showwarning("Vortex", f"Не удалось прочитать файл {os.path.basename(path)}")
+            else:
+                messagebox.showwarning("Vortex", f"Тип файла {ext} не поддерживается.")
+
+        # Добавляем тексты файлов в сообщение
+        if file_texts:
+            msg += "\n\nПрикреплённые файлы:\n" + "\n".join(file_texts)
+
         self.entry.delete(0, tk.END)
         self._append_message("Вы", msg, "user")
         self._start_progress()
         self.send_button.config(state=tk.DISABLED)
-        print("[DEBUG] Запуск потока отправки...")
-        threading.Thread(target=self._send_worker, args=(msg,), daemon=True).start()
+        self.attach_button.config(state=tk.DISABLED)
 
-    def _send_worker(self, msg):
+        # Очищаем вложения
+        self.attachments.clear()
+        if hasattr(self, 'attachment_label'):
+            self.attachment_label.config(text="")
+
+        print("[DEBUG] Запуск потока отправки...")
+        threading.Thread(target=self._send_worker, args=(msg, images_base64), daemon=True).start()
+
+    def _send_worker(self, msg, images_base64):
         self._start_minigame_timer()
         try:
-            # Проверяем провайдера
-            if self.core.get_active_provider() == 0:  # Ollama
-                self.core.start_stream(msg)
-                self.after(0, self._start_stream_message)
-                self.after(50, self._poll_stream_chunks)
+            if images_base64:
+                # Отправляем с изображениями (если есть поддержка в DLL)
+                response = self.core.send_message_with_images(msg, images_base64)
             else:
-                response = self.core.send_message(msg)
-                if response is None:
-                    response = "[Ошибка: не удалось получить ответ]"
-                self.after(0, self._on_response_received, response)
+                # Обычная отправка (потоковая для Ollama)
+                if self.core.get_active_provider() == 0:  # Ollama
+                    self.core.start_stream(msg)
+                    self.after(0, self._start_stream_message)
+                    self.after(50, self._poll_stream_chunks)
+                    return
+                else:
+                    response = self.core.send_message(msg)
+            if response is None:
+                response = "[Ошибка: не удалось получить ответ]"
+            self.after(0, self._on_response_received, response)
         except Exception as e:
             print(f"[DEBUG] Ошибка в потоке: {e}")
             self.after(0, self._on_error, str(e))
@@ -457,13 +574,12 @@ class MainWindow(tk.Tk):
 
     def _poll_stream_chunks(self):
         if not self.core.is_generating():
-            # Проверяем остаток чанков
             chunk = self.core.get_stream_chunk()
             if chunk:
                 self.chat_widget.append_stream_chunk(chunk, "assistant")
-            # Добавляем пустую строку после сообщения ассистента
             self.chat_widget.append_stream_chunk("\n\n", "assistant")
             self.send_button.config(state=tk.NORMAL)
+            self.attach_button.config(state=tk.NORMAL)
             self._stop_progress()
             return
 
@@ -478,12 +594,14 @@ class MainWindow(tk.Tk):
         self._stop_progress()
         self._append_message("Vortex", response, "assistant", animated=True)
         self.send_button.config(state=tk.NORMAL)
+        self.attach_button.config(state=tk.NORMAL)
 
     def _on_error(self, error_msg):
         print(f"[DEBUG] Обработка ошибки: {error_msg}")
         self._stop_progress()
         self._append_message("Vortex", f"[Ошибка: {error_msg}]", "system")
         self.send_button.config(state=tk.NORMAL)
+        self.attach_button.config(state=tk.NORMAL)
 
     # ---------- Мини-игры ----------
     def _start_minigame_timer(self):

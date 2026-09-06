@@ -118,6 +118,25 @@ static void addAssistantMessage(const std::wstring& response) {
     g_memory.saveToFile("vortex_chats.txt");
 }
 
+// ==================== Вспомогательные функции для промпта ====================
+static std::wstring buildFullPrompt(const std::wstring& currentMsg) {
+    auto history = g_memory.getHistory();
+    std::wstring context;
+    size_t start = (history.size() > 6) ? history.size() - 6 : 0;
+    for (size_t i = start; i < history.size(); ++i) {
+        if (history[i].role == L"user") {
+            context += L"Пользователь: " + history[i].content + L" ";
+        } else {
+            context += L"Vortex: " + history[i].content + L" ";
+        }
+    }
+    std::wstring fullPrompt = context + L"Текущий запрос: " + currentMsg;
+    std::replace(fullPrompt.begin(), fullPrompt.end(), L'\n', L' ');
+    std::replace(fullPrompt.begin(), fullPrompt.end(), L'\r', L' ');
+    std::replace(fullPrompt.begin(), fullPrompt.end(), L'\t', L' ');
+    return fullPrompt;
+}
+
 // ==================== Экспортируемые функции ====================
 extern "C" {
 
@@ -297,7 +316,7 @@ char* vortex_get_history() {
     return allocateWString(json);
 }
 
-// ---------- Отправка сообщений (блокирующая) ----------
+// ---------- Отправка сообщений ----------
 char* vortex_send_message(const char* user_message) {
     if (!user_message) return nullptr;
     std::lock_guard<std::mutex> lock(g_sendMutex);
@@ -305,45 +324,8 @@ char* vortex_send_message(const char* user_message) {
     std::wstring currentMsg = utf8_to_wstring(user_message);
     addUserMessage(currentMsg);
 
-    auto history = g_memory.getHistory();
-    std::wstring context;
-    size_t start = (history.size() > 6) ? history.size() - 6 : 0;
-    for (size_t i = start; i < history.size(); ++i) {
-        if (history[i].role == L"user") {
-            context += L"Пользователь: " + history[i].content + L" ";
-        } else {
-            context += L"Vortex: " + history[i].content + L" ";
-        }
-    }
-
-    if (currentMsg.find(L"погод") != std::wstring::npos) {
-        std::wstring city;
-        size_t pos = currentMsg.find(L" в ");
-        if (pos != std::wstring::npos) {
-            city = currentMsg.substr(pos + 3);
-            while (!city.empty() && (city.back() == L' ' || city.back() == L'\n')) city.pop_back();
-        } else {
-            for (int i = (int)history.size() - 2; i >= 0; --i) {
-                if (history[i].role == L"user") {
-                    city = history[i].content;
-                    break;
-                }
-            }
-        }
-        if (!city.empty()) {
-            std::wstring weather = fetchWeather(city);
-            if (!weather.empty()) {
-                context += L"[Погода в " + city + L": " + weather + L"] ";
-            }
-        }
-    }
-
     std::wstring systemPrompt = getSystemPrompt();
-    std::wstring fullPrompt = context + L"Текущий запрос: " + currentMsg;
-    std::replace(fullPrompt.begin(), fullPrompt.end(), L'\n', L' ');
-    std::replace(fullPrompt.begin(), fullPrompt.end(), L'\r', L' ');
-    std::replace(fullPrompt.begin(), fullPrompt.end(), L'\t', L' ');
-
+    std::wstring fullPrompt = buildFullPrompt(currentMsg);
     std::wstring generationMode = g_memory.getGenerationMode();
     ProviderType providerType = g_memory.getActiveProviderType();
     std::wstring errorMsg;
@@ -352,6 +334,47 @@ char* vortex_send_message(const char* user_message) {
     if (providerType == ProviderType::Ollama) {
         response = generateBlocking(g_memory.getModel(), fullPrompt, systemPrompt,
                                     generationMode, &errorMsg);
+    } else {
+        ProviderConfig config = g_memory.getProviderConfig(providerType);
+        response = callProvider(config, fullPrompt, systemPrompt, &errorMsg);
+    }
+
+    if (response.empty()) {
+        if (!errorMsg.empty()) {
+            response = L"[Ошибка: " + errorMsg + L"]";
+        } else {
+            response = L"[Ошибка: не удалось получить ответ]";
+        }
+    }
+
+    addAssistantMessage(response);
+    return allocateWString(response);
+}
+
+char* vortex_send_message_with_images(const char* user_message, const char** images_base64, int image_count) {
+    if (!user_message) return nullptr;
+    std::lock_guard<std::mutex> lock(g_sendMutex);
+
+    std::wstring currentMsg = utf8_to_wstring(user_message);
+    addUserMessage(currentMsg);
+
+    std::vector<std::string> images;
+    for (int i = 0; i < image_count; ++i) {
+        if (images_base64[i]) {
+            images.push_back(std::string(images_base64[i]));
+        }
+    }
+
+    std::wstring systemPrompt = getSystemPrompt();
+    std::wstring fullPrompt = buildFullPrompt(currentMsg);
+    std::wstring generationMode = g_memory.getGenerationMode();
+    ProviderType providerType = g_memory.getActiveProviderType();
+    std::wstring errorMsg;
+    std::wstring response;
+
+    if (providerType == ProviderType::Ollama) {
+        response = generateBlockingWithImages(g_memory.getModel(), fullPrompt, systemPrompt,
+                                              images, generationMode, &errorMsg);
     } else {
         ProviderConfig config = g_memory.getProviderConfig(providerType);
         response = callProvider(config, fullPrompt, systemPrompt, &errorMsg);
@@ -395,8 +418,6 @@ static void streamWorker(std::wstring prompt) {
             g_memory.saveToFile("vortex_chats.txt");
         }
     } else {
-        // Для облачных провайдеров пока используем блокирующий вызов,
-        // но его результат также можно поместить в очередь как один большой чанк.
         ProviderConfig config = g_memory.getProviderConfig(providerType);
         std::wstring response = callProvider(config, prompt, systemPrompt, &errorMsg);
         if (!response.empty()) {
@@ -411,25 +432,11 @@ static void streamWorker(std::wstring prompt) {
 
 int vortex_start_stream(const char* user_message) {
     if (!user_message) return 1;
-    if (g_streaming) return 2; // уже идёт генерация
+    if (g_streaming) return 2;
 
     std::wstring currentMsg = utf8_to_wstring(user_message);
     addUserMessage(currentMsg);
-
-    auto history = g_memory.getHistory();
-    std::wstring context;
-    size_t start = (history.size() > 6) ? history.size() - 6 : 0;
-    for (size_t i = start; i < history.size(); ++i) {
-        if (history[i].role == L"user") {
-            context += L"Пользователь: " + history[i].content + L" ";
-        } else {
-            context += L"Vortex: " + history[i].content + L" ";
-        }
-    }
-    std::wstring fullPrompt = context + L"Текущий запрос: " + currentMsg;
-    std::replace(fullPrompt.begin(), fullPrompt.end(), L'\n', L' ');
-    std::replace(fullPrompt.begin(), fullPrompt.end(), L'\r', L' ');
-    std::replace(fullPrompt.begin(), fullPrompt.end(), L'\t', L' ');
+    std::wstring fullPrompt = buildFullPrompt(currentMsg);
 
     g_streaming = true;
     std::thread t(streamWorker, fullPrompt);
