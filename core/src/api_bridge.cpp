@@ -3,6 +3,7 @@
 #include "../include/memory_store.h"
 #include "../include/llm_engine.h"
 #include "../include/text_processor.h"
+#include "../include/providers.h"
 
 #include <windows.h>
 #include <string>
@@ -16,6 +17,7 @@
 #include <fstream>
 #include <cwchar>
 #include <algorithm>
+#include <sstream>
 
 #pragma comment(lib, "kernel32")
 #pragma comment(lib, "user32")
@@ -181,6 +183,62 @@ char* vortex_get_current_generation_mode() {
     return allocateWString(g_memory.getGenerationMode());
 }
 
+// ---------- Новые функции провайдеров ----------
+int vortex_set_active_provider(int provider_type) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_memory.setActiveProvider(static_cast<ProviderType>(provider_type));
+    g_memory.saveToFile("vortex_chats.txt");
+    return 0;
+}
+
+int vortex_get_active_provider() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return static_cast<int>(g_memory.getActiveProviderType());
+}
+
+int vortex_set_provider_config(int provider_type,
+                               const char* name,
+                               const char* base_url,
+                               const char* api_key,
+                               const char* model) {
+    if (!name || !base_url || !api_key || !model) return 1;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_memory.setProviderConfig(static_cast<ProviderType>(provider_type),
+                               utf8_to_wstring(name),
+                               utf8_to_wstring(base_url),
+                               utf8_to_wstring(api_key),
+                               utf8_to_wstring(model));
+    g_memory.saveToFile("vortex_chats.txt");
+    return 0;
+}
+
+char* vortex_get_provider_list() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    auto providers = g_memory.getAllProviderConfigs();
+    std::wstring json = L"[";
+    for (size_t i = 0; i < providers.size(); ++i) {
+        if (i > 0) json += L",";
+        json += L"{\"type\":" + std::to_wstring(static_cast<int>(providers[i].type)) +
+                L",\"name\":\"" + escapeJson(providers[i].name) +
+                L"\",\"baseUrl\":\"" + escapeJson(providers[i].baseUrl) +
+                L"\",\"apiKey\":\"" + escapeJson(providers[i].apiKey) +
+                L"\",\"model\":\"" + escapeJson(providers[i].model) + L"\"}";
+    }
+    json += L"]";
+    return allocateWString(json);
+}
+
+char* vortex_get_active_provider_info() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    auto p = g_memory.getProviderConfig(g_memory.getActiveProviderType());
+    std::wstring json = L"{\"type\":" + std::to_wstring(static_cast<int>(p.type)) +
+                        L",\"name\":\"" + escapeJson(p.name) +
+                        L"\",\"baseUrl\":\"" + escapeJson(p.baseUrl) +
+                        L"\",\"apiKey\":\"" + escapeJson(p.apiKey) +
+                        L"\",\"model\":\"" + escapeJson(p.model) + L"\"}";
+    return allocateWString(json);
+}
+
 int vortex_create_chat(const char* chat_name) {
     std::lock_guard<std::mutex> lock(g_mutex);
     std::wstring name = chat_name ? utf8_to_wstring(chat_name) : L"";
@@ -241,6 +299,7 @@ char* vortex_send_message(const char* user_message) {
     std::wstring currentMsg = utf8_to_wstring(user_message);
     addUserMessage(currentMsg);
 
+    // Формируем контекст из последних сообщений (до 6)
     auto history = g_memory.getHistory();
     std::wstring context;
     size_t start = (history.size() > 6) ? history.size() - 6 : 0;
@@ -252,37 +311,51 @@ char* vortex_send_message(const char* user_message) {
         }
     }
 
+    if (currentMsg.find(L"погод") != std::wstring::npos) {
+        std::wstring city;
+        size_t pos = currentMsg.find(L" в ");
+        if (pos != std::wstring::npos) {
+            city = currentMsg.substr(pos + 3);
+            while (!city.empty() && (city.back() == L' ' || city.back() == L'\n')) city.pop_back();
+        } else {
+            for (int i = (int)history.size() - 2; i >= 0; --i) {
+                if (history[i].role == L"user") {
+                    city = history[i].content;
+                    break;
+                }
+            }
+        }
+        if (!city.empty()) {
+            std::wstring weather = fetchWeather(city);
+            if (!weather.empty()) {
+                context += L"[Погода в " + city + L": " + weather + L"] ";
+            }
+        }
+    }
+
     std::wstring systemPrompt = getSystemPrompt();
     std::wstring fullPrompt = context + L"Текущий запрос: " + currentMsg;
 
-    // Убираем переводы строк и табуляции
+    // Убираем переводы строк
     std::replace(fullPrompt.begin(), fullPrompt.end(), L'\n', L' ');
     std::replace(fullPrompt.begin(), fullPrompt.end(), L'\r', L' ');
     std::replace(fullPrompt.begin(), fullPrompt.end(), L'\t', L' ');
 
     std::wstring generationMode = g_memory.getGenerationMode();
-
-    // Защита модели
-    std::wstring model = g_memory.getModel();
-    if (model.empty() || model.find(L"[CHAT]") != std::wstring::npos) {
-        model = L"qwen3.5:4b";
-        g_memory.setModel(model);
-    }
-
-    // Лог
-    {
-        std::ofstream log("debug_vortex.log", std::ios::app);
-        log << "=== vortex_send_message ===" << std::endl;
-        log << "Model: " << wstring_to_utf8(model) << std::endl;
-        log << "GenerationMode: " << wstring_to_utf8(generationMode) << std::endl;
-        log << "SystemPrompt: " << wstring_to_utf8(systemPrompt) << std::endl;
-        log << "FullPrompt: " << wstring_to_utf8(fullPrompt) << std::endl;
-        log.close();
-    }
+    ProviderType providerType = g_memory.getActiveProviderType();
 
     std::wstring errorMsg;
-    std::wstring response = generateBlocking(model, fullPrompt, systemPrompt,
-                                             generationMode, &errorMsg);
+    std::wstring response;
+
+    if (providerType == ProviderType::Ollama) {
+        // Используем локальную модель через llm_engine
+        response = generateBlocking(g_memory.getModel(), fullPrompt, systemPrompt,
+                                    generationMode, &errorMsg);
+    } else {
+        // Облачный провайдер
+        ProviderConfig config = g_memory.getProviderConfig(providerType);
+        response = callProvider(config, fullPrompt, systemPrompt, &errorMsg);
+    }
 
     if (response.empty()) {
         if (!errorMsg.empty()) {

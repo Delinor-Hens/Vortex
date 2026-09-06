@@ -6,8 +6,11 @@ import ctypes
 import os
 import sys
 import json
+import random
 from .core_wrapper import VortexCore
 from .chat_widget import ChatWidget
+from .code_widget import CodeWidget
+from .minigames import SnakeGame, Game2048, TicTacToe
 
 class MainWindow(tk.Tk):
     def __init__(self, core: VortexCore):
@@ -23,6 +26,9 @@ class MainWindow(tk.Tk):
         self.music_volume = 100
         self.warmup_done = False
 
+        self.minigame_window = None
+        self.minigame_after_id = None
+
         self._load_music_volume()
         self._setup_styles()
         self._build_ui()
@@ -31,7 +37,6 @@ class MainWindow(tk.Tk):
         self._apply_music_volume()
         self.state('zoomed')
 
-        # Иконка
         try:
             icon_path = os.path.join(self._get_app_dir(), 'assets', 'logo.ico')
             if not os.path.exists(icon_path):
@@ -40,14 +45,11 @@ class MainWindow(tk.Tk):
         except:
             pass
 
-        # Показываем оверлей загрузки
         self._show_loading_overlay()
-        # Блокируем ввод
         self._set_input_state(False)
-        # Запускаем прогрев
         self._start_warmup()
 
-    # ---------- Вспомогательные методы ----------
+    # ---------- Вспомогательные методы (ресурсы, музыка) ----------
     def _resource_path(self, relative_path):
         if hasattr(sys, '_MEIPASS'):
             return os.path.join(sys._MEIPASS, relative_path)
@@ -108,6 +110,7 @@ class MainWindow(tk.Tk):
         except:
             pass
 
+    # ---------- Стили ----------
     def _setup_styles(self):
         style = ttk.Style()
         style.theme_use("clam")
@@ -162,8 +165,29 @@ class MainWindow(tk.Tk):
                   fieldbackground=[("readonly", entry_bg)],
                   foreground=[("readonly", fg)])
 
+    # ---------- Построение интерфейса ----------
     def _build_ui(self):
-        top = ttk.Frame(self)
+        # Создаём Notebook для вкладок
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+
+        # Вкладка "Чат"
+        self.chat_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.chat_frame, text="Чат")
+
+        # Вкладка "Код"
+        self.code_widget = CodeWidget(self.notebook, self.core)
+        self.notebook.add(self.code_widget, text="Код")
+
+        # Строим чат внутри chat_frame
+        self._build_chat_ui()
+
+        # Общие элементы: прогресс-бар и т.д.
+        self.progress = ttk.Progressbar(self, mode='indeterminate', length=200)
+        self.progress.pack(side=tk.BOTTOM, anchor=tk.W, padx=12, pady=(0,6))
+
+    def _build_chat_ui(self):
+        top = ttk.Frame(self.chat_frame)
         top.pack(fill=tk.X, padx=12, pady=8)
 
         self.chat_combo = ttk.Combobox(top, state="readonly", width=25)
@@ -175,15 +199,14 @@ class MainWindow(tk.Tk):
         ttk.Button(top, text="Очистить", command=self._clear_chat).pack(side=tk.LEFT, padx=(8,0))
         ttk.Button(top, text="Настройки", command=self._open_settings).pack(side=tk.LEFT, padx=(8,0))
 
-        self.model_label = ttk.Label(self, text="Модель: Vortex 2.1.12",
+        self.model_label = ttk.Label(self.chat_frame, text="Модель: Vortex 2.1.12",
                                      foreground="#888888", font=("Segoe UI", 9))
         self.model_label.pack(side=tk.TOP, anchor=tk.E, padx=12, pady=(0,5))
 
-        self.chat_widget = ChatWidget(self)
+        self.chat_widget = ChatWidget(self.chat_frame)
         self.chat_widget.pack(fill=tk.BOTH, expand=True, padx=12, pady=5)
 
-        # Нижняя панель: поле ввода + кнопка отправки
-        bottom = ttk.Frame(self)
+        bottom = ttk.Frame(self.chat_frame)
         bottom.pack(fill=tk.X, padx=12, pady=8)
 
         self.entry = ttk.Entry(bottom, font=("Segoe UI", 11))
@@ -195,8 +218,7 @@ class MainWindow(tk.Tk):
                                       style="Accent.TButton", command=self._send)
         self.send_button.pack(side=tk.LEFT, padx=(8,0))
 
-        # Кнопки режима генерации
-        mode_frame = ttk.Frame(self)
+        mode_frame = ttk.Frame(self.chat_frame)
         mode_frame.pack(fill=tk.X, padx=12, pady=(0, 5))
 
         ttk.Label(mode_frame, text="Режим:", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(0, 5))
@@ -208,12 +230,9 @@ class MainWindow(tk.Tk):
             btn.pack(side=tk.LEFT, padx=2)
             self.mode_buttons[mode] = btn
 
-        # Прогресс-бар (невидим, используется для фоновых задач)
-        self.progress = ttk.Progressbar(self, mode='indeterminate', length=200)
-        self.progress.pack(side=tk.BOTTOM, anchor=tk.W, padx=12, pady=(0,6))
-
         self._update_mode_buttons()
 
+    # ---------- Логика чата (как раньше) ----------
     def _set_generation_mode(self, mode):
         self.core.set_generation_mode(mode)
         self.mode_var.set(mode)
@@ -227,18 +246,15 @@ class MainWindow(tk.Tk):
             else:
                 btn.configure(style="TButton")
 
-    # ---------- Оверлей загрузки ----------
     def _show_loading_overlay(self):
         self.loading_overlay = tk.Frame(self, bg="#121212")
         self.loading_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
         self.loading_overlay.lift()
 
-        # Фиолетовая буква V
         label = tk.Label(self.loading_overlay, text="V", font=("Segoe UI", 100, "bold"),
                          fg="#6c5ce7", bg="#121212")
         label.pack(expand=True)
 
-        # Анимированный текст
         self.loading_text = tk.Label(self.loading_overlay, text="Загрузка модели...",
                                      font=("Segoe UI", 14), fg="#e0e0e0", bg="#121212")
         self.loading_text.pack(pady=10)
@@ -264,7 +280,6 @@ class MainWindow(tk.Tk):
         self.entry.config(state=state)
         self.send_button.config(state=state)
 
-    # ---------- Прогрев модели ----------
     def _start_warmup(self):
         def warmup():
             try:
@@ -276,14 +291,12 @@ class MainWindow(tk.Tk):
                 self.after(0, self._hide_loading_overlay)
         threading.Thread(target=warmup, daemon=True).start()
 
-    # ---------- Управление прогресс-баром ----------
     def _start_progress(self):
         self.progress.start(15)
 
     def _stop_progress(self):
         self.progress.stop()
 
-    # ---------- Остальные методы (чаты, отправка) ----------
     def _refresh_chats(self):
         try:
             print("[DEBUG] Запрос списка чатов...")
@@ -387,6 +400,7 @@ class MainWindow(tk.Tk):
         threading.Thread(target=self._send_worker, args=(msg,), daemon=True).start()
 
     def _send_worker(self, msg):
+        self._start_minigame_timer()
         try:
             print("[DEBUG] Вызов core.send_message...")
             response = self.core.send_message(msg)
@@ -397,6 +411,12 @@ class MainWindow(tk.Tk):
         except Exception as e:
             print(f"[DEBUG] Ошибка в потоке: {e}")
             self.after(0, self._on_error, str(e))
+        finally:
+            if self.minigame_after_id:
+                self.after_cancel(self.minigame_after_id)
+                self.minigame_after_id = None
+            if self.minigame_window:
+                self._on_minigame_close()
 
     def _on_response_received(self, response):
         print("[DEBUG] Ответ получен в UI")
@@ -409,6 +429,34 @@ class MainWindow(tk.Tk):
         self._stop_progress()
         self._append_message("Vortex", f"[Ошибка: {error_msg}]", "system")
         self.send_button.config(state=tk.NORMAL)
+
+    # ---------- Мини-игры ----------
+    def _start_minigame_timer(self):
+        self.minigame_after_id = self.after(15000, self._show_minigame)
+
+    def _show_minigame(self):
+        if self.minigame_window is not None:
+            return
+        self.minigame_window = tk.Toplevel(self)
+        self.minigame_window.title("Vortex ждёт")
+        self.minigame_window.configure(bg="#1e1e1e")
+        self.minigame_window.geometry("+%d+%d" % (self.winfo_rootx()+100, self.winfo_rooty()+100))
+        self.minigame_window.transient(self)
+        self.minigame_window.protocol("WM_DELETE_WINDOW", self._on_minigame_close)
+
+        info_label = tk.Label(self.minigame_window, text="Модель готовит ответ. Вы можете пока сыграть в мини-игру",
+                              fg="#ffffff", bg="#1e1e1e", font=("Segoe UI", 11))
+        info_label.pack(pady=10)
+
+        games = [SnakeGame, Game2048, TicTacToe]
+        game_class = random.choice(games)
+        game = game_class(self.minigame_window, on_close=self._on_minigame_close)
+        game.pack()
+
+    def _on_minigame_close(self):
+        if self.minigame_window:
+            self.minigame_window.destroy()
+            self.minigame_window = None
 
     def on_close(self):
         print("[DEBUG] Закрытие приложения")

@@ -1,4 +1,3 @@
-// core/src/memory_store.cpp
 #include "../include/memory_store.h"
 #include <fstream>
 #include <sstream>
@@ -11,12 +10,27 @@ MemoryStore::MemoryStore()
     : m_currentChatId(0),
       m_model(L"qwen3.5:4b"),
       m_mode(L"default"),
-      m_generationMode(L"normal")
+      m_generationMode(L"normal"),
+      m_activeProvider(ProviderType::Ollama)
 {
     m_chats.push_back({0, L"Default"});
     m_history.push_back({});
+
+    // Инициализация провайдеров по умолчанию
+    m_providers = {
+        {ProviderType::Ollama, L"Vortex", L"", L"", L"qwen3.5:4b"},
+        {ProviderType::OpenAI, L"OpenAI", L"https://api.openai.com/v1", L"", L"gpt-4o-mini"},
+        {ProviderType::Anthropic, L"Anthropic", L"https://api.anthropic.com/v1", L"", L"claude-3-5-sonnet-20241022"},
+        {ProviderType::Gemini, L"Google Gemini", L"https://generativelanguage.googleapis.com/v1beta", L"", L"gemini-1.5-flash"},
+        {ProviderType::Mistral, L"Mistral AI", L"https://api.mistral.ai/v1", L"", L"mistral-small-latest"},
+        {ProviderType::DeepSeek, L"DeepSeek", L"https://api.deepseek.com", L"", L"deepseek-chat"},
+        {ProviderType::OpenRouter, L"OpenRouter", L"https://openrouter.ai/api/v1", L"", L"openai/gpt-4o-mini"},
+        {ProviderType::Groq, L"Groq", L"https://api.groq.com/openai/v1", L"", L"llama3-8b-8192"},
+        {ProviderType::Together, L"Together AI", L"https://api.together.xyz/v1", L"", L"meta-llama/Llama-3-8b-chat-hf"}
+    };
 }
 
+// ---------- Чаты и сообщения (без изменений) ----------
 int MemoryStore::createChat(const std::wstring& name) {
     std::lock_guard<std::mutex> lock(m_mutex);
     int newId = m_chats.empty() ? 0 : m_chats.back().first + 1;
@@ -28,7 +42,7 @@ int MemoryStore::createChat(const std::wstring& name) {
 
 bool MemoryStore::deleteChat(int chatId) {
     std::lock_guard<std::mutex> lock(m_mutex);
-    if (chatId == 0) return false; // нельзя удалить Default
+    if (chatId == 0) return false;
     auto it = std::find_if(m_chats.begin(), m_chats.end(),
                            [chatId](const std::pair<int, std::wstring>& p) {
                                return p.first == chatId;
@@ -101,9 +115,17 @@ std::vector<ChatMessage> MemoryStore::getHistory() const {
     return {};
 }
 
+// ---------- Модель и режимы ----------
 void MemoryStore::setModel(const std::wstring& model) {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_model = model;
+    // Обновляем модель у активного провайдера Ollama
+    for (auto& p : m_providers) {
+        if (p.type == ProviderType::Ollama) {
+            p.model = model;
+            break;
+        }
+    }
 }
 
 std::wstring MemoryStore::getModel() const {
@@ -133,15 +155,98 @@ std::wstring MemoryStore::getGenerationMode() const {
     return m_generationMode;
 }
 
+// ---------- Провайдеры ----------
+void MemoryStore::setActiveProvider(ProviderType type) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_activeProvider = type;
+}
+
+ProviderType MemoryStore::getActiveProviderType() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_activeProvider;
+}
+
+std::wstring MemoryStore::getActiveProviderName() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    for (const auto& p : m_providers) {
+        if (p.type == m_activeProvider) return p.name;
+    }
+    return L"";
+}
+
+std::wstring MemoryStore::getActiveProviderModel() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    for (const auto& p : m_providers) {
+        if (p.type == m_activeProvider) return p.model;
+    }
+    return L"";
+}
+
+std::wstring MemoryStore::getActiveProviderApiKey() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    for (const auto& p : m_providers) {
+        if (p.type == m_activeProvider) return p.apiKey;
+    }
+    return L"";
+}
+
+std::wstring MemoryStore::getActiveProviderBaseUrl() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    for (const auto& p : m_providers) {
+        if (p.type == m_activeProvider) return p.baseUrl;
+    }
+    return L"";
+}
+
+void MemoryStore::setProviderConfig(ProviderType type, const std::wstring& name,
+                                    const std::wstring& baseUrl, const std::wstring& apiKey,
+                                    const std::wstring& model) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    for (auto& p : m_providers) {
+        if (p.type == type) {
+            p.name = name;
+            p.baseUrl = baseUrl;
+            p.apiKey = apiKey;
+            p.model = model;
+            break;
+        }
+    }
+}
+
+ProviderConfig MemoryStore::getProviderConfig(ProviderType type) const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    for (const auto& p : m_providers) {
+        if (p.type == type) return p;
+    }
+    return ProviderConfig();
+}
+
+std::vector<ProviderConfig> MemoryStore::getAllProviderConfigs() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_providers;
+}
+
+// ---------- Сохранение/загрузка ----------
 bool MemoryStore::saveToFile(const std::string& filename) {
     std::lock_guard<std::mutex> lock(m_mutex);
     std::wofstream file(filename, std::ios::binary);
     if (!file) return false;
-    // Не используем imbue, чтобы избежать проблем с локалью
 
     file << m_model << L"\n";
     file << m_mode << L"\n";
     file << m_generationMode << L"\n";
+    file << static_cast<int>(m_activeProvider) << L"\n";
+
+    // Сохраняем провайдеров
+    file << m_providers.size() << L"\n";
+    for (const auto& p : m_providers) {
+        file << static_cast<int>(p.type) << L"\n";
+        file << p.name << L"\n";
+        file << p.baseUrl << L"\n";
+        file << p.apiKey << L"\n";
+        file << p.model << L"\n";
+    }
+
     file << m_chats.size() << L"\n";
     for (size_t i = 0; i < m_chats.size(); ++i) {
         file << m_chats[i].first << L"|" << m_chats[i].second << L"\n";
@@ -158,12 +263,33 @@ bool MemoryStore::loadFromFile(const std::string& filename) {
     std::lock_guard<std::mutex> lock(m_mutex);
     std::wifstream file(filename, std::ios::binary);
     if (!file) return false;
-    // Не используем imbue
 
     std::getline(file, m_model);
     std::getline(file, m_mode);
     std::getline(file, m_generationMode);
     if (m_generationMode.empty()) m_generationMode = L"normal";
+
+    int activeProvider;
+    file >> activeProvider;
+    file.ignore();
+    m_activeProvider = static_cast<ProviderType>(activeProvider);
+
+    size_t providerCount;
+    file >> providerCount;
+    file.ignore();
+    m_providers.clear();
+    for (size_t i = 0; i < providerCount; ++i) {
+        ProviderConfig p;
+        int typeInt;
+        file >> typeInt;
+        file.ignore();
+        p.type = static_cast<ProviderType>(typeInt);
+        std::getline(file, p.name);
+        std::getline(file, p.baseUrl);
+        std::getline(file, p.apiKey);
+        std::getline(file, p.model);
+        m_providers.push_back(p);
+    }
 
     size_t chatCount;
     file >> chatCount;

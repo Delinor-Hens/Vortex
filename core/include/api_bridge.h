@@ -19,10 +19,22 @@ VORTEX_API int vortex_pull_model(const char* model_name);
 
 VORTEX_API int vortex_set_model(const char* model_name);
 VORTEX_API int vortex_set_mode(const char* mode_name);
-VORTEX_API int vortex_set_generation_mode(const char* mode_name);  // NEW
+VORTEX_API int vortex_set_generation_mode(const char* mode_name);
 VORTEX_API char* vortex_get_current_model();
 VORTEX_API char* vortex_get_current_mode();
-VORTEX_API char* vortex_get_current_generation_mode();             // NEW
+VORTEX_API char* vortex_get_current_generation_mode();
+
+// Новые функции для провайдеров
+VORTEX_API int vortex_set_active_provider(int provider_type);
+VORTEX_API int vortex_get_active_provider();
+VORTEX_API int vortex_set_provider_config(int provider_type,
+                                          const char* name,
+                                          const char* base_url,
+                                          const char* api_key,
+                                          const char* model);
+VORTEX_API char* vortex_get_provider_list();        // JSON-массив провайдеров
+VORTEX_API char* vortex_get_active_provider_info();  // JSON с информацией о текущем провайдере
+
 VORTEX_API int vortex_warmup();
 
 VORTEX_API int vortex_create_chat(const char* chat_name);
