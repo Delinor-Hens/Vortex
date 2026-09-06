@@ -19,6 +19,7 @@
   - `Instant` — сверхбыстрые ответы.
   - `Normal` — сбалансированный (по умолчанию).
   - `Thinking` — глубокие и подробные.
+<img width="1919" height="1029" alt="image" src="https://github.com/user-attachments/assets/6103ae2f-fcb9-486e-bfbb-10889f084b5d" />
 
 ### 💻 Вкладка «Код»
 - Генерация кода по описанию.
@@ -26,6 +27,8 @@
 - Поиск и исправление ошибок.
 - Оптимизация алгоритмов.
 - Поддержка Python, JavaScript, C++, C#, Java, Go, Rust и других.
+<img width="1919" height="1028" alt="image" src="https://github.com/user-attachments/assets/e3dbdb7a-9f9f-49ee-99d4-025750b4010d" />
+
 
 ### 🎮 Мини-игры
 - Если модель отвечает дольше 15 секунд, запускается случайная мини-игра (Змейка, 2048, Крестики-нолики).
