@@ -1,3 +1,4 @@
+// core/src/memory_store.cpp
 #include "../include/memory_store.h"
 #include <fstream>
 #include <sstream>
@@ -5,6 +6,10 @@
 #include <cwchar>
 #include <locale>
 #include <codecvt>
+#include <windows.h>
+#include <dpapi.h>
+
+#pragma comment(lib, "crypt32.lib")
 
 MemoryStore::MemoryStore()
     : m_currentChatId(0),
@@ -16,7 +21,6 @@ MemoryStore::MemoryStore()
     m_chats.push_back({0, L"Default"});
     m_history.push_back({});
 
-    // Инициализация провайдеров по умолчанию
     m_providers = {
         {ProviderType::Ollama, L"Vortex", L"", L"", L"qwen3.5:4b"},
         {ProviderType::OpenAI, L"OpenAI", L"https://api.openai.com/v1", L"", L"gpt-4o-mini"},
@@ -28,6 +32,54 @@ MemoryStore::MemoryStore()
         {ProviderType::Groq, L"Groq", L"https://api.groq.com/openai/v1", L"", L"llama3-8b-8192"},
         {ProviderType::Together, L"Together AI", L"https://api.together.xyz/v1", L"", L"meta-llama/Llama-3-8b-chat-hf"}
     };
+}
+
+// ---------- Шифрование строк через DPAPI ----------
+static std::wstring EncryptString(const std::wstring& plainText) {
+    if (plainText.empty()) return L"";
+
+    DATA_BLOB inBlob;
+    inBlob.pbData = (BYTE*)plainText.c_str();
+    inBlob.cbData = (DWORD)(plainText.size() * sizeof(wchar_t));
+
+    DATA_BLOB outBlob;
+    if (!CryptProtectData(&inBlob, L"Vortex API Key", NULL, NULL, NULL, CRYPTPROTECT_UI_FORBIDDEN, &outBlob))
+        return L"";
+
+    // Конвертируем бинарные данные в hex-строку
+    std::wstring encrypted;
+    encrypted.reserve(outBlob.cbData * 2);
+    for (DWORD i = 0; i < outBlob.cbData; ++i) {
+        wchar_t buf[3];
+        swprintf(buf, 3, L"%02X", outBlob.pbData[i]);
+        encrypted += buf;
+    }
+
+    LocalFree(outBlob.pbData);
+    return encrypted;
+}
+
+static std::wstring DecryptString(const std::wstring& encryptedHex) {
+    if (encryptedHex.empty()) return L"";
+
+    // Переводим hex-строку в бинарные данные
+    size_t len = encryptedHex.size() / 2;
+    std::vector<BYTE> data(len);
+    for (size_t i = 0; i < len; ++i) {
+        swscanf(encryptedHex.c_str() + i * 2, L"%2hhx", &data[i]);
+    }
+
+    DATA_BLOB inBlob;
+    inBlob.pbData = data.data();
+    inBlob.cbData = (DWORD)data.size();
+
+    DATA_BLOB outBlob;
+    if (!CryptUnprotectData(&inBlob, NULL, NULL, NULL, NULL, CRYPTPROTECT_UI_FORBIDDEN, &outBlob))
+        return L"";
+
+    std::wstring decrypted((wchar_t*)outBlob.pbData, outBlob.cbData / sizeof(wchar_t));
+    LocalFree(outBlob.pbData);
+    return decrypted;
 }
 
 // ---------- Чаты и сообщения (без изменений) ----------
@@ -119,7 +171,6 @@ std::vector<ChatMessage> MemoryStore::getHistory() const {
 void MemoryStore::setModel(const std::wstring& model) {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_model = model;
-    // Обновляем модель у активного провайдера Ollama
     for (auto& p : m_providers) {
         if (p.type == ProviderType::Ollama) {
             p.model = model;
@@ -185,7 +236,10 @@ std::wstring MemoryStore::getActiveProviderModel() const {
 std::wstring MemoryStore::getActiveProviderApiKey() const {
     std::lock_guard<std::mutex> lock(m_mutex);
     for (const auto& p : m_providers) {
-        if (p.type == m_activeProvider) return p.apiKey;
+        if (p.type == m_activeProvider) {
+            // Расшифровываем ключ
+            return DecryptString(p.apiKey);
+        }
     }
     return L"";
 }
@@ -206,7 +260,8 @@ void MemoryStore::setProviderConfig(ProviderType type, const std::wstring& name,
         if (p.type == type) {
             p.name = name;
             p.baseUrl = baseUrl;
-            p.apiKey = apiKey;
+            // Шифруем ключ перед сохранением
+            p.apiKey = EncryptString(apiKey);
             p.model = model;
             break;
         }
@@ -216,17 +271,29 @@ void MemoryStore::setProviderConfig(ProviderType type, const std::wstring& name,
 ProviderConfig MemoryStore::getProviderConfig(ProviderType type) const {
     std::lock_guard<std::mutex> lock(m_mutex);
     for (const auto& p : m_providers) {
-        if (p.type == type) return p;
+        if (p.type == type) {
+            ProviderConfig config = p;
+            // Расшифровываем ключ для возврата
+            config.apiKey = DecryptString(p.apiKey);
+            return config;
+        }
     }
     return ProviderConfig();
 }
 
 std::vector<ProviderConfig> MemoryStore::getAllProviderConfigs() const {
     std::lock_guard<std::mutex> lock(m_mutex);
-    return m_providers;
+    std::vector<ProviderConfig> result;
+    for (const auto& p : m_providers) {
+        ProviderConfig config = p;
+        // Расшифровываем ключ
+        config.apiKey = DecryptString(p.apiKey);
+        result.push_back(config);
+    }
+    return result;
 }
 
-// ---------- Сохранение/загрузка ----------
+// ---------- Сохранение / загрузка ----------
 bool MemoryStore::saveToFile(const std::string& filename) {
     std::lock_guard<std::mutex> lock(m_mutex);
     std::wofstream file(filename, std::ios::binary);
@@ -237,12 +304,12 @@ bool MemoryStore::saveToFile(const std::string& filename) {
     file << m_generationMode << L"\n";
     file << static_cast<int>(m_activeProvider) << L"\n";
 
-    // Сохраняем провайдеров
     file << m_providers.size() << L"\n";
     for (const auto& p : m_providers) {
         file << static_cast<int>(p.type) << L"\n";
         file << p.name << L"\n";
         file << p.baseUrl << L"\n";
+        // apiKey уже зашифрован, просто сохраняем
         file << p.apiKey << L"\n";
         file << p.model << L"\n";
     }
@@ -286,7 +353,7 @@ bool MemoryStore::loadFromFile(const std::string& filename) {
         p.type = static_cast<ProviderType>(typeInt);
         std::getline(file, p.name);
         std::getline(file, p.baseUrl);
-        std::getline(file, p.apiKey);
+        std::getline(file, p.apiKey); // уже зашифрован
         std::getline(file, p.model);
         m_providers.push_back(p);
     }

@@ -11,6 +11,7 @@ from .core_wrapper import VortexCore
 from .chat_widget import ChatWidget
 from .code_widget import CodeWidget
 from .minigames import SnakeGame, Game2048, TicTacToe
+from .theme_window import ThemeWindow
 
 class MainWindow(tk.Tk):
     def __init__(self, core: VortexCore):
@@ -25,6 +26,7 @@ class MainWindow(tk.Tk):
         self.current_chat_id = -1
         self.music_volume = 100
         self.warmup_done = False
+        self.current_theme = "Тёмная"
 
         self.minigame_window = None
         self.minigame_after_id = None
@@ -49,7 +51,7 @@ class MainWindow(tk.Tk):
         self._set_input_state(False)
         self._start_warmup()
 
-    # ---------- Вспомогательные методы (ресурсы, музыка) ----------
+    # ---------- Вспомогательные методы ----------
     def _resource_path(self, relative_path):
         if hasattr(sys, '_MEIPASS'):
             return os.path.join(sys._MEIPASS, relative_path)
@@ -110,7 +112,6 @@ class MainWindow(tk.Tk):
         except:
             pass
 
-    # ---------- Стили ----------
     def _setup_styles(self):
         style = ttk.Style()
         style.theme_use("clam")
@@ -165,9 +166,36 @@ class MainWindow(tk.Tk):
                   fieldbackground=[("readonly", entry_bg)],
                   foreground=[("readonly", fg)])
 
-    # ---------- Построение интерфейса ----------
+    def apply_theme(self, theme):
+        """Применяет тему ко всему интерфейсу."""
+        self.current_theme = theme.get("name", "Custom")
+        bg = theme["bg"]
+        fg = theme["fg"]
+        accent = theme["accent"]
+        entry_bg = theme["entry"]
+        button_bg = theme["button"]
+
+        self.configure(bg=bg)
+
+        style = ttk.Style()
+        style.configure("TFrame", background=bg)
+        style.configure("TLabel", background=bg, foreground=fg)
+        style.configure("TButton", background=button_bg, foreground=fg)
+        style.map("TButton",
+                  background=[("active", accent), ("pressed", accent)],
+                  foreground=[("pressed", "#ffffff")])
+        style.configure("Accent.TButton", background=accent, foreground="#ffffff")
+        style.map("Accent.TButton",
+                  background=[("active", accent), ("pressed", accent)])
+        style.configure("TEntry", fieldbackground=entry_bg, foreground=fg, insertcolor=fg)
+        style.configure("TCombobox", fieldbackground=entry_bg, background=button_bg, foreground=fg)
+
+        if hasattr(self, 'chat_widget'):
+            self.chat_widget.configure(bg=bg, fg=fg)
+        if hasattr(self, 'model_label'):
+            self.model_label.configure(foreground=fg)
+
     def _build_ui(self):
-        # Создаём Notebook для вкладок
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill=tk.BOTH, expand=True)
 
@@ -179,10 +207,8 @@ class MainWindow(tk.Tk):
         self.code_widget = CodeWidget(self.notebook, self.core)
         self.notebook.add(self.code_widget, text="Код")
 
-        # Строим чат внутри chat_frame
         self._build_chat_ui()
 
-        # Общие элементы: прогресс-бар и т.д.
         self.progress = ttk.Progressbar(self, mode='indeterminate', length=200)
         self.progress.pack(side=tk.BOTTOM, anchor=tk.W, padx=12, pady=(0,6))
 
@@ -232,7 +258,7 @@ class MainWindow(tk.Tk):
 
         self._update_mode_buttons()
 
-    # ---------- Логика чата (как раньше) ----------
+    # ---------- Логика чата ----------
     def _set_generation_mode(self, mode):
         self.core.set_generation_mode(mode)
         self.mode_var.set(mode)
@@ -246,6 +272,7 @@ class MainWindow(tk.Tk):
             else:
                 btn.configure(style="TButton")
 
+    # ---------- Экран загрузки ----------
     def _show_loading_overlay(self):
         self.loading_overlay = tk.Frame(self, bg="#121212")
         self.loading_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
@@ -291,12 +318,14 @@ class MainWindow(tk.Tk):
                 self.after(0, self._hide_loading_overlay)
         threading.Thread(target=warmup, daemon=True).start()
 
+    # ---------- Прогресс-бар ----------
     def _start_progress(self):
         self.progress.start(15)
 
     def _stop_progress(self):
         self.progress.stop()
 
+    # ---------- Чаты ----------
     def _refresh_chats(self):
         try:
             print("[DEBUG] Запрос списка чатов...")
@@ -377,6 +406,7 @@ class MainWindow(tk.Tk):
         from .settings_window import SettingsWindow
         SettingsWindow(self, self.core)
 
+    # ---------- Отправка сообщений ----------
     def _send(self):
         if not self.warmup_done:
             return
@@ -402,12 +432,16 @@ class MainWindow(tk.Tk):
     def _send_worker(self, msg):
         self._start_minigame_timer()
         try:
-            print("[DEBUG] Вызов core.send_message...")
-            response = self.core.send_message(msg)
-            print(f"[DEBUG] Ответ получен: {response if response else 'None'}")
-            if response is None:
-                response = "[Ошибка: не удалось получить ответ]"
-            self.after(0, self._on_response_received, response)
+            # Проверяем провайдера
+            if self.core.get_active_provider() == 0:  # Ollama
+                self.core.start_stream(msg)
+                self.after(0, self._start_stream_message)
+                self.after(50, self._poll_stream_chunks)
+            else:
+                response = self.core.send_message(msg)
+                if response is None:
+                    response = "[Ошибка: не удалось получить ответ]"
+                self.after(0, self._on_response_received, response)
         except Exception as e:
             print(f"[DEBUG] Ошибка в потоке: {e}")
             self.after(0, self._on_error, str(e))
@@ -417,6 +451,27 @@ class MainWindow(tk.Tk):
                 self.minigame_after_id = None
             if self.minigame_window:
                 self._on_minigame_close()
+
+    def _start_stream_message(self):
+        self.chat_widget.start_stream_message("Vortex", "assistant")
+
+    def _poll_stream_chunks(self):
+        if not self.core.is_generating():
+            # Проверяем остаток чанков
+            chunk = self.core.get_stream_chunk()
+            if chunk:
+                self.chat_widget.append_stream_chunk(chunk, "assistant")
+            # Добавляем пустую строку после сообщения ассистента
+            self.chat_widget.append_stream_chunk("\n\n", "assistant")
+            self.send_button.config(state=tk.NORMAL)
+            self._stop_progress()
+            return
+
+        chunk = self.core.get_stream_chunk()
+        if chunk:
+            self.chat_widget.append_stream_chunk(chunk, "assistant")
+
+        self.after(50, self._poll_stream_chunks)
 
     def _on_response_received(self, response):
         print("[DEBUG] Ответ получен в UI")

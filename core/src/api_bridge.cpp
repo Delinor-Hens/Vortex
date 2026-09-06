@@ -17,7 +17,7 @@
 #include <fstream>
 #include <cwchar>
 #include <algorithm>
-#include <sstream>
+#include <functional>
 
 #pragma comment(lib, "kernel32")
 #pragma comment(lib, "user32")
@@ -55,6 +55,11 @@ static char* allocateWString(const std::wstring& wstr) {
 static MemoryStore g_memory;
 static std::mutex g_mutex;
 static std::mutex g_sendMutex;
+
+// Для потоковой передачи
+static std::queue<std::wstring> g_streamChunks;
+static std::mutex g_streamMutex;
+static std::atomic<bool> g_streaming{false};
 
 // ==================== Экранирование JSON ====================
 static std::wstring escapeJson(const std::wstring& s) {
@@ -118,7 +123,6 @@ extern "C" {
 
 int vortex_init(const char* ollama_host) {
     g_memory.loadFromFile("vortex_chats.txt");
-    // Проверяем модель
     std::wstring model = g_memory.getModel();
     if (model.empty() || model.find(L"[CHAT]") != std::wstring::npos) {
         g_memory.setModel(L"qwen3.5:4b");
@@ -183,7 +187,7 @@ char* vortex_get_current_generation_mode() {
     return allocateWString(g_memory.getGenerationMode());
 }
 
-// ---------- Новые функции провайдеров ----------
+// ---------- Провайдеры ----------
 int vortex_set_active_provider(int provider_type) {
     std::lock_guard<std::mutex> lock(g_mutex);
     g_memory.setActiveProvider(static_cast<ProviderType>(provider_type));
@@ -239,6 +243,7 @@ char* vortex_get_active_provider_info() {
     return allocateWString(json);
 }
 
+// ---------- Чаты ----------
 int vortex_create_chat(const char* chat_name) {
     std::lock_guard<std::mutex> lock(g_mutex);
     std::wstring name = chat_name ? utf8_to_wstring(chat_name) : L"";
@@ -292,6 +297,7 @@ char* vortex_get_history() {
     return allocateWString(json);
 }
 
+// ---------- Отправка сообщений (блокирующая) ----------
 char* vortex_send_message(const char* user_message) {
     if (!user_message) return nullptr;
     std::lock_guard<std::mutex> lock(g_sendMutex);
@@ -299,7 +305,6 @@ char* vortex_send_message(const char* user_message) {
     std::wstring currentMsg = utf8_to_wstring(user_message);
     addUserMessage(currentMsg);
 
-    // Формируем контекст из последних сообщений (до 6)
     auto history = g_memory.getHistory();
     std::wstring context;
     size_t start = (history.size() > 6) ? history.size() - 6 : 0;
@@ -335,24 +340,19 @@ char* vortex_send_message(const char* user_message) {
 
     std::wstring systemPrompt = getSystemPrompt();
     std::wstring fullPrompt = context + L"Текущий запрос: " + currentMsg;
-
-    // Убираем переводы строк
     std::replace(fullPrompt.begin(), fullPrompt.end(), L'\n', L' ');
     std::replace(fullPrompt.begin(), fullPrompt.end(), L'\r', L' ');
     std::replace(fullPrompt.begin(), fullPrompt.end(), L'\t', L' ');
 
     std::wstring generationMode = g_memory.getGenerationMode();
     ProviderType providerType = g_memory.getActiveProviderType();
-
     std::wstring errorMsg;
     std::wstring response;
 
     if (providerType == ProviderType::Ollama) {
-        // Используем локальную модель через llm_engine
         response = generateBlocking(g_memory.getModel(), fullPrompt, systemPrompt,
                                     generationMode, &errorMsg);
     } else {
-        // Облачный провайдер
         ProviderConfig config = g_memory.getProviderConfig(providerType);
         response = callProvider(config, fullPrompt, systemPrompt, &errorMsg);
     }
@@ -369,9 +369,85 @@ char* vortex_send_message(const char* user_message) {
     return allocateWString(response);
 }
 
-int vortex_start_stream(const char* user_message) { return 1; }
-char* vortex_get_stream_chunk() { return nullptr; }
-int vortex_is_generating() { return 0; }
+// ---------- Потоковая передача ----------
+static void streamWorker(std::wstring prompt) {
+    std::wstring systemPrompt = getSystemPrompt();
+    std::wstring generationMode = g_memory.getGenerationMode();
+    ProviderType providerType = g_memory.getActiveProviderType();
+    std::wstring errorMsg;
+
+    if (providerType == ProviderType::Ollama) {
+        std::wstring fullResponse;
+        generateStreamingOllama(
+            g_memory.getModel(),
+            prompt,
+            systemPrompt,
+            generationMode,
+            [&](const std::wstring& chunk) {
+                std::lock_guard<std::mutex> lock(g_streamMutex);
+                g_streamChunks.push(chunk);
+                fullResponse += chunk;
+            },
+            &errorMsg
+        );
+        if (!fullResponse.empty()) {
+            g_memory.addMessage(L"assistant", fullResponse);
+            g_memory.saveToFile("vortex_chats.txt");
+        }
+    } else {
+        // Для облачных провайдеров пока используем блокирующий вызов,
+        // но его результат также можно поместить в очередь как один большой чанк.
+        ProviderConfig config = g_memory.getProviderConfig(providerType);
+        std::wstring response = callProvider(config, prompt, systemPrompt, &errorMsg);
+        if (!response.empty()) {
+            std::lock_guard<std::mutex> lock(g_streamMutex);
+            g_streamChunks.push(response);
+            g_memory.addMessage(L"assistant", response);
+            g_memory.saveToFile("vortex_chats.txt");
+        }
+    }
+    g_streaming = false;
+}
+
+int vortex_start_stream(const char* user_message) {
+    if (!user_message) return 1;
+    if (g_streaming) return 2; // уже идёт генерация
+
+    std::wstring currentMsg = utf8_to_wstring(user_message);
+    addUserMessage(currentMsg);
+
+    auto history = g_memory.getHistory();
+    std::wstring context;
+    size_t start = (history.size() > 6) ? history.size() - 6 : 0;
+    for (size_t i = start; i < history.size(); ++i) {
+        if (history[i].role == L"user") {
+            context += L"Пользователь: " + history[i].content + L" ";
+        } else {
+            context += L"Vortex: " + history[i].content + L" ";
+        }
+    }
+    std::wstring fullPrompt = context + L"Текущий запрос: " + currentMsg;
+    std::replace(fullPrompt.begin(), fullPrompt.end(), L'\n', L' ');
+    std::replace(fullPrompt.begin(), fullPrompt.end(), L'\r', L' ');
+    std::replace(fullPrompt.begin(), fullPrompt.end(), L'\t', L' ');
+
+    g_streaming = true;
+    std::thread t(streamWorker, fullPrompt);
+    t.detach();
+    return 0;
+}
+
+char* vortex_get_stream_chunk() {
+    std::lock_guard<std::mutex> lock(g_streamMutex);
+    if (g_streamChunks.empty()) return nullptr;
+    std::wstring chunk = g_streamChunks.front();
+    g_streamChunks.pop();
+    return allocateWString(chunk);
+}
+
+int vortex_is_generating() {
+    return g_streaming ? 1 : 0;
+}
 
 void vortex_free_string(char* str) { free(str); }
 

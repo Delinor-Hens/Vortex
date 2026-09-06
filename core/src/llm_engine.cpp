@@ -12,7 +12,9 @@
 #include <cstring>
 #include <stdexcept>
 #include <sstream>
-#include <fstream>
+#include <functional>
+#include <thread>
+#include <atomic>
 
 #pragma comment(lib, "kernel32")
 #pragma comment(lib, "user32")
@@ -122,8 +124,8 @@ static std::string httpGetOllama(const std::string& path) {
     return response.substr(pos + 4);
 }
 
-// ==================== HTTP POST для /api/chat ====================
-static std::string httpPostOllamaChat(const std::string& body) {
+// ==================== HTTP POST для /api/generate ====================
+static std::string httpPostOllamaGenerate(const std::string& body) {
     ensureNetworkInitialized();
     SOCKET sock = psocket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (sock == INVALID_SOCKET) return "";
@@ -136,7 +138,7 @@ static std::string httpPostOllamaChat(const std::string& body) {
         pclosesocket(sock);
         return "";
     }
-    std::string request = "POST /api/chat HTTP/1.1\r\n"
+    std::string request = "POST /api/generate HTTP/1.1\r\n"
                           "Host: 127.0.0.1:11434\r\n"
                           "Content-Type: application/json\r\n"
                           "Content-Length: " + std::to_string(body.length()) + "\r\n"
@@ -157,22 +159,17 @@ static std::string httpPostOllamaChat(const std::string& body) {
     return response.substr(pos + 4);
 }
 
-// ==================== Извлечение content из ответа /api/chat ====================
-static std::wstring extractChatContent(const std::string& response) {
-    // Ищем "message":{
-    const std::string msgKey = "\"message\":";
-    size_t msgPos = response.find(msgKey);
-    if (msgPos == std::string::npos) return L"";
+// ==================== Извлечение поля "response" ====================
+static std::wstring extractResponse(const std::string& json) {
+    const std::string key = "\"response\":\"";
+    size_t pos = json.find(key);
+    if (pos == std::string::npos) return L"";
 
-    // Ищем "content":" внутри message
-    size_t contentPos = response.find("\"content\":\"", msgPos + msgKey.length());
-    if (contentPos == std::string::npos) return L"";
-
-    contentPos += 11; // длина "\"content\":\""
+    pos += key.length();
     std::string answer;
     bool escaped = false;
-    for (size_t i = contentPos; i < response.length(); ++i) {
-        char c = response[i];
+    for (size_t i = pos; i < json.length(); ++i) {
+        char c = json[i];
         if (escaped) {
             switch (c) {
                 case 'n': answer += '\n'; break;
@@ -222,10 +219,9 @@ std::wstring generateBlocking(const std::wstring& model,
     ensureNetworkInitialized();
 
     std::string utf8model = wstring_to_utf8(model);
-    std::string utf8system = wstring_to_utf8(systemPrompt);
     std::string utf8prompt = wstring_to_utf8(prompt);
+    std::string utf8system = wstring_to_utf8(systemPrompt);
 
-    // Надёжное экранирование
     auto jsonEscape = [](const std::string& s) {
         std::string out;
         for (unsigned char c : s) {
@@ -251,10 +247,9 @@ std::wstring generateBlocking(const std::wstring& model,
     };
 
     std::string escapedModel = jsonEscape(utf8model);
-    std::string escapedSystem = jsonEscape(utf8system);
     std::string escapedPrompt = jsonEscape(utf8prompt);
+    std::string escapedSystem = jsonEscape(utf8system);
 
-    // Параметры генерации
     int numPredict = 512;
     double temperature = 0.6;
     double topP = 0.9;
@@ -272,38 +267,21 @@ std::wstring generateBlocking(const std::wstring& model,
         topP = 0.9;
     }
 
-    // Добавляем "think":false на верхний уровень, чтобы модель не использовала thinking
     std::string jsonBody = "{\"model\":\"" + escapedModel +
-                           "\",\"messages\":[{\"role\":\"system\",\"content\":\"" + escapedSystem +
-                           "\"},{\"role\":\"user\",\"content\":\"" + escapedPrompt +
-                           "\"}],\"stream\":false,\"think\":false,\"options\":{\"num_predict\":" + std::to_string(numPredict) +
+                           "\",\"prompt\":\"" + escapedPrompt +
+                           "\",\"stream\":false,\"think\":false,\"system\":\"" + escapedSystem +
+                           "\",\"options\":{\"num_predict\":" + std::to_string(numPredict) +
                            ",\"temperature\":" + std::to_string(temperature) +
                            ",\"top_p\":" + std::to_string(topP) + "}}";
 
-    // Логи
-    {
-        std::ofstream log("debug_llm.log", std::ios::app);
-        log << "=== JSON BODY ===" << std::endl;
-        log << jsonBody << std::endl;
-        log.close();
-    }
-
-    std::string response = httpPostOllamaChat(jsonBody);
-
-    {
-        std::ofstream log("debug_llm.log", std::ios::app);
-        log << "=== RAW RESPONSE ===" << std::endl;
-        log << response << std::endl;
-        log << "====================" << std::endl;
-        log.close();
-    }
+    std::string response = httpPostOllamaGenerate(jsonBody);
 
     if (response.empty()) {
         if (errorMsg) *errorMsg = L"Empty response from Ollama";
         return L"";
     }
 
-    std::wstring answer = extractChatContent(response);
+    std::wstring answer = extractResponse(response);
     if (answer.empty()) {
         size_t errPos = response.find("\"error\":\"");
         if (errPos != std::string::npos) {
@@ -325,6 +303,136 @@ std::wstring generateBlocking(const std::wstring& model,
     }
 
     return answer;
+}
+
+// ==================== Потоковая генерация (Ollama) ====================
+bool generateStreamingOllama(const std::wstring& model,
+                             const std::wstring& prompt,
+                             const std::wstring& systemPrompt,
+                             const std::wstring& generationMode,
+                             std::function<void(const std::wstring&)> chunkCallback,
+                             std::wstring* errorMsg) {
+    ensureNetworkInitialized();
+
+    std::string utf8model = wstring_to_utf8(model);
+    std::string utf8prompt = wstring_to_utf8(prompt);
+    std::string utf8system = wstring_to_utf8(systemPrompt);
+
+    auto jsonEscape = [](const std::string& s) {
+        std::string out;
+        for (unsigned char c : s) {
+            switch (c) {
+                case '"': out += "\\\""; break;
+                case '\\': out += "\\\\"; break;
+                case '\b': out += "\\b"; break;
+                case '\f': out += "\\f"; break;
+                case '\n': out += "\\n"; break;
+                case '\r': out += "\\r"; break;
+                case '\t': out += "\\t"; break;
+                default:
+                    if (c < 0x20) {
+                        char buf[8];
+                        snprintf(buf, sizeof(buf), "\\u%04x", c);
+                        out += buf;
+                    } else {
+                        out += c;
+                    }
+            }
+        }
+        return out;
+    };
+
+    std::string escapedModel = jsonEscape(utf8model);
+    std::string escapedPrompt = jsonEscape(utf8prompt);
+    std::string escapedSystem = jsonEscape(utf8system);
+
+    int numPredict = 512;
+    double temperature = 0.6;
+    double topP = 0.9;
+    if (generationMode == L"instant") {
+        numPredict = 128;
+        temperature = 0.8;
+        topP = 0.9;
+    } else if (generationMode == L"normal") {
+        numPredict = 512;
+        temperature = 0.6;
+        topP = 0.9;
+    } else if (generationMode == L"thinking") {
+        numPredict = 1024;
+        temperature = 0.3;
+        topP = 0.9;
+    }
+
+    std::string jsonBody = "{\"model\":\"" + escapedModel +
+                           "\",\"prompt\":\"" + escapedPrompt +
+                           "\",\"stream\":true,\"think\":false,\"system\":\"" + escapedSystem +
+                           "\",\"options\":{\"num_predict\":" + std::to_string(numPredict) +
+                           ",\"temperature\":" + std::to_string(temperature) +
+                           ",\"top_p\":" + std::to_string(topP) + "}}";
+
+    SOCKET sock = psocket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sock == INVALID_SOCKET) {
+        if (errorMsg) *errorMsg = L"Failed to create socket";
+        return false;
+    }
+    sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = phtons(11434);
+    addr.sin_addr.s_addr = pinet_addr(g_ollamaHost.c_str());
+    if (pconnect(sock, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
+        pclosesocket(sock);
+        if (errorMsg) *errorMsg = L"Failed to connect to Ollama";
+        return false;
+    }
+
+    std::string request = "POST /api/generate HTTP/1.1\r\n"
+                          "Host: 127.0.0.1:11434\r\n"
+                          "Content-Type: application/json\r\n"
+                          "Content-Length: " + std::to_string(jsonBody.length()) + "\r\n"
+                          "Connection: close\r\n\r\n" + jsonBody;
+
+    if (psend(sock, request.c_str(), request.length(), 0) == SOCKET_ERROR) {
+        pclosesocket(sock);
+        if (errorMsg) *errorMsg = L"Failed to send request";
+        return false;
+    }
+
+    std::string buffer;
+    char recvBuf[4096];
+    int received;
+    bool headerParsed = false;
+    std::string body;
+
+    while ((received = precv(sock, recvBuf, sizeof(recvBuf), 0)) > 0) {
+        buffer.append(recvBuf, received);
+        if (!headerParsed) {
+            size_t headerEnd = buffer.find("\r\n\r\n");
+            if (headerEnd != std::string::npos) {
+                body = buffer.substr(headerEnd + 4);
+                buffer.clear();
+                headerParsed = true;
+            }
+        } else {
+            body.append(recvBuf, received);
+        }
+
+        // Обрабатываем полученные чанки (каждый JSON-объект на новой строке)
+        size_t pos;
+        while ((pos = body.find('\n')) != std::string::npos) {
+            std::string line = body.substr(0, pos);
+            body.erase(0, pos + 1);
+            if (line.empty()) continue;
+            // Извлекаем "response"
+            std::wstring chunk = extractResponse(line);
+            if (!chunk.empty()) {
+                chunkCallback(chunk);
+            }
+        }
+    }
+
+    pclosesocket(sock);
+    return true;
 }
 
 // ==================== Заглушки ====================

@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import json
 import os
+from .theme_window import ThemeWindow
 
 class SettingsWindow(tk.Toplevel):
     def __init__(self, parent, core):
@@ -86,6 +87,8 @@ class SettingsWindow(tk.Toplevel):
         self.volume_label = ttk.Label(self.basic_frame, text="100%")
         self.volume_label.pack(anchor='w')
 
+        ttk.Button(self.basic_frame, text="Темы оформления", command=self._open_theme_window).pack(anchor='w', pady=10)
+
         ttk.Button(self.basic_frame, text="Сохранить", style="Accent.TButton",
                    command=self._save_basic).pack(anchor='w', pady=20)
 
@@ -93,13 +96,11 @@ class SettingsWindow(tk.Toplevel):
         self.provider_frame = ttk.Frame(self.notebook)
         self.notebook.add(self.provider_frame, text="Провайдеры")
 
-        # Список провайдеров
         ttk.Label(self.provider_frame, text="Активный провайдер:").pack(anchor='w', pady=(10,0))
         self.provider_combo = ttk.Combobox(self.provider_frame, state="readonly", width=30)
         self.provider_combo.pack(fill=tk.X, pady=5)
         self.provider_combo.bind("<<ComboboxSelected>>", self._on_provider_selected)
 
-        # Форма для редактирования
         ttk.Label(self.provider_frame, text="Название:").pack(anchor='w', pady=(10,0))
         self.p_name = ttk.Entry(self.provider_frame)
         self.p_name.pack(fill=tk.X, pady=5)
@@ -146,6 +147,9 @@ class SettingsWindow(tk.Toplevel):
         self.parent.set_music_volume(int(self.music_volume_var.get()))
         messagebox.showinfo("Vortex", "Настройки сохранены")
 
+    def _open_theme_window(self):
+        ThemeWindow(self.parent)
+
     def _on_provider_selected(self, event=None):
         idx = self.provider_combo.current()
         if idx < 0 or not self.providers:
@@ -168,7 +172,6 @@ class SettingsWindow(tk.Toplevel):
             self.p_key.get().strip(),
             self.p_model.get().strip()
         )
-        # Обновляем список
         self.providers = self.core.get_provider_list()
         self.provider_combo['values'] = [f"{x['type']}: {x['name']}" for x in self.providers]
         self.provider_combo.current(idx)
@@ -183,10 +186,5 @@ class SettingsWindow(tk.Toplevel):
         self.provider_status.config(text="Активный провайдер обновлён", foreground="#6c5ce7")
 
     def _test_provider(self):
-        idx = self.provider_combo.current()
-        if idx < 0:
-            return
-        p = self.providers[idx]
-        # Здесь можно сделать тестовый запрос к провайдеру
-        # В первой версии просто показываем сообщение
+        # В будущем можно добавить реальный тест
         self.provider_status.config(text="Тест пока не реализован", foreground="#ff5555")

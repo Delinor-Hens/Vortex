@@ -26,7 +26,6 @@ class CodeWidget(ttk.Frame):
                         bordercolor="#333333")
 
     def _build_ui(self):
-        # Верхняя панель с описанием задачи и языком
         top = ttk.Frame(self)
         top.pack(fill=tk.X, padx=10, pady=8)
 
@@ -43,7 +42,6 @@ class CodeWidget(ttk.Frame):
         self.task_entry = ttk.Entry(top, width=40)
         self.task_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        # Кнопки действий
         btn_frame = ttk.Frame(self)
         btn_frame.pack(fill=tk.X, padx=10, pady=5)
 
@@ -56,7 +54,6 @@ class CodeWidget(ttk.Frame):
         for text, cmd in actions:
             ttk.Button(btn_frame, text=text, command=cmd, style="Code.TButton").pack(side=tk.LEFT, padx=2)
 
-        # Область ввода/вставки кода
         code_frame = ttk.LabelFrame(self, text="Ваш код", style="Code.TLabelframe")
         code_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
@@ -66,7 +63,6 @@ class CodeWidget(ttk.Frame):
                                                     insertbackground="#ffffff")
         self.code_input.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # Область вывода результата
         output_frame = ttk.LabelFrame(self, text="Результат", style="Code.TLabelframe")
         output_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0,10))
 
@@ -77,7 +73,6 @@ class CodeWidget(ttk.Frame):
                                                      state=tk.DISABLED)
         self.output_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # Индикатор выполнения
         self.progress = ttk.Progressbar(self, mode='indeterminate')
         self.progress.pack(fill=tk.X, padx=10, pady=(0,5))
 
@@ -88,7 +83,6 @@ class CodeWidget(ttk.Frame):
         self.output_text.config(state=tk.DISABLED)
 
     def _run_action(self, mode):
-        # Собираем запрос
         language = self.language_var.get()
         task = self.task_entry.get().strip()
         code = self.code_input.get("1.0", tk.END).strip()
@@ -97,7 +91,6 @@ class CodeWidget(ttk.Frame):
             self._set_output("Введите код или описание задачи.")
             return
 
-        # Формируем промпт в зависимости от режима
         if mode == "generate":
             prompt = f"[Задача: генерация кода]\nЯзык: {language}\nОписание: {task}\nОтвет представь только кодом без пояснений."
         elif mode == "explain":
@@ -107,7 +100,6 @@ class CodeWidget(ttk.Frame):
         elif mode == "optimize":
             prompt = f"[Задача: оптимизация кода]\nЯзык: {language}\nКод:\n{code}\nОптимизируй код и объясни изменения."
 
-        # Блокируем кнопки и запускаем поток
         self.progress.start(10)
         threading.Thread(target=self._worker, args=(prompt,), daemon=True).start()
 

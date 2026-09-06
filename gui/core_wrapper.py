@@ -78,10 +78,11 @@ class VortexCore:
         self.dll.vortex_get_active_provider_info.argtypes = []
         self.dll.vortex_get_active_provider_info.restype = ctypes.c_void_p
 
-        # Отправка сообщений
+        # Отправка сообщений (блокирующая)
         self.dll.vortex_send_message.argtypes = [ctypes.c_char_p]
         self.dll.vortex_send_message.restype = ctypes.c_void_p
 
+        # Потоковая передача
         self.dll.vortex_start_stream.argtypes = [ctypes.c_char_p]
         self.dll.vortex_start_stream.restype = ctypes.c_int
 
@@ -221,7 +222,7 @@ class VortexCore:
                     return []
         return []
 
-    # ---------- Отправка ----------
+    # ---------- Отправка сообщений ----------
     def send_message(self, user_message):
         ptr = self.dll.vortex_send_message(user_message.encode('utf-8'))
         if not ptr:
