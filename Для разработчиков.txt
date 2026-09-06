@@ -1,8 +1,0 @@
-# 1. Пересборка DLL (C++ логика)
-g++ -shared -o build\vortex_core.dll core\src\api_bridge.cpp core\src\llm_engine.cpp core\src\memory_store.cpp core\src\text_processor.cpp core\src\providers.cpp -DVORTEX_CORE_EXPORTS -std=c++11 -mwindows -static -static-libgcc -static-libstdc++ -lws2_32 -lwinhttp -lcrypt32 -Icore/include
-
-# 2. Пересборка автономного exe (Python GUI)
-python -m PyInstaller --onefile --windowed --add-binary "build/vortex_core.dll;build" --add-data "assets;assets" --add-data "config.json;." vortex.py
-
-# 3. Сборка установщика
-g++ vortex_setup.cpp -o vortex_setup.exe -municode -mwindows -static -static-libgcc -static-libstdc++ -lole32 -lshell32 -luuid -lshlwapi -lcomctl32 -loleaut32 -lurlmon
