@@ -1,3 +1,4 @@
+// vortex_setup.cpp
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <commctrl.h>
@@ -85,7 +86,7 @@ bool ExtractDataFilesTo(const std::wstring& data0Path,
                         const std::wstring& destFolder);
 std::wstring GetCurrentExeDir();
 std::string WStringToUTF8(const std::wstring& wstr);
-bool RunProcessAndWait(const std::wstring& cmdLine, DWORD timeoutMs = INFINITE); // теперь проверяет код возврата
+bool RunProcessAndWait(const std::wstring& cmdLine, DWORD timeoutMs = INFINITE);
 std::wstring FindOllamaExecutable();
 bool IsOllamaModelAvailable(const std::wstring& modelName);
 bool WaitForOllamaServer(DWORD timeoutMs = 30000);
@@ -97,6 +98,7 @@ ULONGLONG GetFreeSpaceOnDrive(wchar_t driveLetter);
 std::wstring FindBestModelDirectory();
 void SetOllamaModelsEnvironment(const std::wstring& modelsPath);
 void RemoveOllamaModelsEnvironment();
+void RefreshEnvironmentPath();
 
 // ====================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ======================
 std::wstring GetCurrentExeDir() {
@@ -176,9 +178,29 @@ bool IsVortexInstalled() {
     return false;
 }
 
-// Исправлено: теперь ищем только реальные файлы, без where
+// Обновление переменной PATH в текущем процессе
+void RefreshEnvironmentPath() {
+    wchar_t sysPath[32767];
+    wchar_t userPath[32767];
+    DWORD sysLen = GetEnvironmentVariableW(L"PATH", sysPath, 32767);
+    if (sysLen == 0) sysPath[0] = L'\0';
+
+    HKEY hKey;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Environment", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        DWORD size = sizeof(userPath);
+        if (RegQueryValueExW(hKey, L"Path", NULL, NULL, (LPBYTE)userPath, &size) == ERROR_SUCCESS) {
+            std::wstring combined = std::wstring(sysPath) + L";" + std::wstring(userPath);
+            SetEnvironmentVariableW(L"PATH", combined.c_str());
+        } else {
+            SetEnvironmentVariableW(L"PATH", sysPath);
+        }
+        RegCloseKey(hKey);
+    }
+}
+
 std::wstring FindOllamaExecutable() {
-    // 1. Проверяем PATH
+    RefreshEnvironmentPath(); // обновляем PATH перед поиском
+
     wchar_t path[MAX_PATH];
     DWORD len = GetEnvironmentVariableW(L"PATH", path, MAX_PATH);
     if (len > 0 && len < MAX_PATH) {
@@ -191,7 +213,7 @@ std::wstring FindOllamaExecutable() {
                 return dir + L"\\ollama.exe";
         }
     }
-    // 2. Стандартные пути
+
     std::vector<std::wstring> paths = {
         L"C:\\Program Files\\Ollama\\ollama.exe",
         L"C:\\Program Files (x86)\\Ollama\\ollama.exe",
@@ -202,12 +224,14 @@ std::wstring FindOllamaExecutable() {
         ExpandEnvironmentStringsW(p.c_str(), expanded, MAX_PATH);
         if (FileExists(expanded)) return expanded;
     }
-    // 3. %LOCALAPPDATA%\Programs\Ollama
+
     wchar_t localAppData[MAX_PATH];
     if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, localAppData))) {
         std::wstring localPath = std::wstring(localAppData) + L"\\Programs\\Ollama\\ollama.exe";
         if (FileExists(localPath)) return localPath;
         localPath = std::wstring(localAppData) + L"\\Ollama\\ollama.exe";
+        if (FileExists(localPath)) return localPath;
+        localPath = std::wstring(localAppData) + L"\\Microsoft\\WinGet\\Links\\ollama.exe";
         if (FileExists(localPath)) return localPath;
     }
     return L"";
@@ -321,7 +345,6 @@ std::wstring utf8_to_wstring(const std::string& str) {
     return result;
 }
 
-// Исправленная RunProcessAndWait: возвращает true только при коде возврата 0
 bool RunProcessAndWait(const std::wstring& cmdLine, DWORD timeoutMs) {
     STARTUPINFOW si = {0};
     si.cb = sizeof(si);
@@ -396,7 +419,7 @@ bool WaitForOllamaServer(DWORD timeoutMs) {
     while (GetTickCount() - start < timeoutMs) {
         std::wstring ollamaPath = FindOllamaExecutable();
         if (!ollamaPath.empty()) {
-            std::wstring cmd = L"\"" + ollamaPath + L"\" list >nul 2>nul";
+            std::wstring cmd = L"\"" + ollamaPath + L"\" list";
             if (RunProcessAndWait(cmd, 3000)) return true;
         }
         Sleep(1000);
@@ -677,6 +700,8 @@ DWORD WINAPI InstallOllamaThread(LPVOID lpParam) {
     SetProgressText(L"Проверка Ollama...");
     SetProgressValue(30);
 
+    RefreshEnvironmentPath();
+
     bool ollamaInstalled = IsOllamaInstalled();
     if (!ollamaInstalled) {
         SetProgressText(L"Установка Visual C++ Redistributable...");
@@ -704,7 +729,7 @@ DWORD WINAPI InstallOllamaThread(LPVOID lpParam) {
             SetProgressValue(60);
             std::wstring cmd = L"cmd.exe /c winget install Ollama.Ollama --silent --accept-package-agreements --accept-source-agreements";
             installSuccess = RunProcessAndWait(cmd, 300000);
-            if (installSuccess) { Sleep(2000); ollamaInstalled = IsOllamaInstalled(); }
+            if (installSuccess) { Sleep(2000); RefreshEnvironmentPath(); ollamaInstalled = IsOllamaInstalled(); }
         }
         if (!ollamaInstalled) {
             SetProgressText(L"Загрузка установщика Ollama...");
@@ -717,7 +742,7 @@ DWORD WINAPI InstallOllamaThread(LPVOID lpParam) {
                 SetProgressValue(80);
                 std::wstring cmd = L"\"" + installerPath + L"\" /VERYSILENT /NORESTART";
                 installSuccess = RunProcessAndWait(cmd, 300000);
-                if (installSuccess) { Sleep(2000); ollamaInstalled = IsOllamaInstalled(); }
+                if (installSuccess) { Sleep(2000); RefreshEnvironmentPath(); ollamaInstalled = IsOllamaInstalled(); }
                 DeleteFileW(installerPath.c_str());
             }
         }
@@ -783,7 +808,6 @@ void PerformInstall() {
 
     fs::create_directories(installPath);
 
-    // Копируем установщик как uninstall.exe
     wchar_t selfPath[MAX_PATH];
     GetModuleFileNameW(NULL, selfPath, MAX_PATH);
     std::wstring uninstallExe = installPath + L"\\uninstall.exe";
@@ -791,7 +815,6 @@ void PerformInstall() {
         LogMessage(L"Не удалось скопировать uninstall.exe");
     }
 
-    // Определяем папку для моделей Ollama и устанавливаем переменную
     std::wstring modelDir = FindBestModelDirectory();
     SetOllamaModelsEnvironment(modelDir);
     LogMessage(L"Папка моделей Ollama: " + modelDir);

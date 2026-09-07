@@ -6,11 +6,75 @@
 #include <cwchar>
 #include <locale>
 #include <codecvt>
-#include <windows.h>
-#include <dpapi.h>
 
-#pragma comment(lib, "crypt32.lib")
+// ==================== Кроссплатформенное шифрование ====================
+// Временная замена DPAPI: XOR с фиксированным ключом и hex-кодирование.
+// Для продакшена рекомендуется заменить на OpenSSL (AES) или libsodium.
 
+static const std::wstring XOR_KEY = L"VortexSecretKey123"; // ключ
+
+static std::wstring ByteToHex(const std::vector<unsigned char>& data) {
+    const wchar_t* hex = L"0123456789ABCDEF";
+    std::wstring result;
+    result.reserve(data.size() * 2);
+    for (unsigned char b : data) {
+        result += hex[(b >> 4) & 0x0F];
+        result += hex[b & 0x0F];
+    }
+    return result;
+}
+
+static std::vector<unsigned char> HexToBytes(const std::wstring& hex) {
+    std::vector<unsigned char> bytes;
+    if (hex.size() % 2 != 0) return bytes;
+    bytes.reserve(hex.size() / 2);
+    for (size_t i = 0; i < hex.size(); i += 2) {
+        wchar_t c1 = hex[i];
+        wchar_t c2 = hex[i+1];
+        auto hexVal = [](wchar_t c) -> int {
+            if (c >= L'0' && c <= L'9') return c - L'0';
+            if (c >= L'A' && c <= L'F') return c - L'A' + 10;
+            if (c >= L'a' && c <= L'f') return c - L'a' + 10;
+            return -1;
+        };
+        int v1 = hexVal(c1);
+        int v2 = hexVal(c2);
+        if (v1 < 0 || v2 < 0) return {};
+        bytes.push_back(static_cast<unsigned char>((v1 << 4) | v2));
+    }
+    return bytes;
+}
+
+static std::wstring EncryptString(const std::wstring& plainText) {
+    if (plainText.empty()) return L"";
+    std::vector<unsigned char> data(plainText.begin(), plainText.end()); // копируем как есть (wchar_t -> unsigned char)
+    // XOR с ключом
+    for (size_t i = 0; i < data.size(); ++i) {
+        data[i] ^= static_cast<unsigned char>(XOR_KEY[i % XOR_KEY.size()]);
+    }
+    return ByteToHex(data);
+}
+
+static std::wstring DecryptString(const std::wstring& encryptedHex) {
+    if (encryptedHex.empty()) return L"";
+    std::vector<unsigned char> data = HexToBytes(encryptedHex);
+    if (data.empty()) return L"";
+    for (size_t i = 0; i < data.size(); ++i) {
+        data[i] ^= static_cast<unsigned char>(XOR_KEY[i % XOR_KEY.size()]);
+    }
+    // преобразуем обратно в wstring (важно: если исходная строка была wchar_t, то данные содержат пары байт)
+    // Здесь мы предполагаем, что исходный текст был wchar_t (UTF-16LE на Windows). Для кроссплатформенности это не идеально,
+    // но временно сохраняем поведение как с DPAPI (также работало с wchar_t).
+    if (data.size() % sizeof(wchar_t) != 0) {
+        // если не кратно размеру wchar_t, вернём пустую строку, чтобы избежать ошибок
+        return L"";
+    }
+    std::wstring decrypted(data.size() / sizeof(wchar_t), L'\0');
+    memcpy(&decrypted[0], data.data(), data.size());
+    return decrypted;
+}
+
+// ==================== Конструктор и инициализация ====================
 MemoryStore::MemoryStore()
     : m_currentChatId(0),
       m_model(L"qwen3.5:4b"),
@@ -32,52 +96,6 @@ MemoryStore::MemoryStore()
         {ProviderType::Groq, L"Groq", L"https://api.groq.com/openai/v1", L"", L"llama3-8b-8192"},
         {ProviderType::Together, L"Together AI", L"https://api.together.xyz/v1", L"", L"meta-llama/Llama-3-8b-chat-hf"}
     };
-}
-
-// ---------- Шифрование строк через DPAPI ----------
-static std::wstring EncryptString(const std::wstring& plainText) {
-    if (plainText.empty()) return L"";
-
-    DATA_BLOB inBlob;
-    inBlob.pbData = (BYTE*)plainText.c_str();
-    inBlob.cbData = (DWORD)(plainText.size() * sizeof(wchar_t));
-
-    DATA_BLOB outBlob;
-    if (!CryptProtectData(&inBlob, L"Vortex API Key", NULL, NULL, NULL, CRYPTPROTECT_UI_FORBIDDEN, &outBlob))
-        return L"";
-
-    std::wstring encrypted;
-    encrypted.reserve(outBlob.cbData * 2);
-    for (DWORD i = 0; i < outBlob.cbData; ++i) {
-        wchar_t buf[3];
-        swprintf(buf, 3, L"%02X", outBlob.pbData[i]);
-        encrypted += buf;
-    }
-
-    LocalFree(outBlob.pbData);
-    return encrypted;
-}
-
-static std::wstring DecryptString(const std::wstring& encryptedHex) {
-    if (encryptedHex.empty()) return L"";
-
-    size_t len = encryptedHex.size() / 2;
-    std::vector<BYTE> data(len);
-    for (size_t i = 0; i < len; ++i) {
-        swscanf(encryptedHex.c_str() + i * 2, L"%2hhx", &data[i]);
-    }
-
-    DATA_BLOB inBlob;
-    inBlob.pbData = data.data();
-    inBlob.cbData = (DWORD)data.size();
-
-    DATA_BLOB outBlob;
-    if (!CryptUnprotectData(&inBlob, NULL, NULL, NULL, NULL, CRYPTPROTECT_UI_FORBIDDEN, &outBlob))
-        return L"";
-
-    std::wstring decrypted((wchar_t*)outBlob.pbData, outBlob.cbData / sizeof(wchar_t));
-    LocalFree(outBlob.pbData);
-    return decrypted;
 }
 
 // ---------- Чаты и сообщения (без изменений) ----------

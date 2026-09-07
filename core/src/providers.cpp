@@ -1,10 +1,5 @@
 // core/src/providers.cpp
 #include "../include/providers.h"
-#include "../include/llm_engine.h" // для конвертаций utf8/wstring (продублируем)
-
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <winhttp.h>
 #include <string>
 #include <vector>
 #include <mutex>
@@ -13,29 +8,19 @@
 #include <stdexcept>
 #include <algorithm>
 
-#pragma comment(lib, "winhttp.lib")
-#pragma comment(lib, "kernel32")
-#pragma comment(lib, "user32")
+#ifdef _WIN32
+    #include <windows.h>
+#else
+    #include <codecvt>
+    #include <locale>
+#endif
 
-// ==================== Конвертация UTF-8 <-> UTF-16 ====================
-static std::wstring utf8_to_wstring(const std::string& str) {
-    if (str.empty()) return L"";
-    int len = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, nullptr, 0);
-    if (len <= 0) return L"";
-    std::wstring result(len - 1, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, &result[0], len);
-    return result;
-}
+#include <curl/curl.h>
 
-static std::string wstring_to_utf8(const std::wstring& wstr) {
-    if (wstr.empty()) return "";
-    int len = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    if (len <= 0) return "";
-    std::string result(len - 1, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, &result[0], len, nullptr, nullptr);
-    return result;
-}
+#pragma comment(lib, "libcurl.lib") // для MSVC, для mingw не нужно, используется -lcurl
 
+// ==================== Конвертация UTF-8 <-> wide string ====================
+#ifdef _WIN32
 static std::wstring string_to_wstring(const std::string& str) {
     if (str.empty()) return L"";
     int len = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, nullptr, 0);
@@ -53,6 +38,17 @@ static std::string wstring_to_string(const std::wstring& wstr) {
     WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, &result[0], len, nullptr, nullptr);
     return result;
 }
+#else
+static std::wstring string_to_wstring(const std::string& str) {
+    std::wstring_convert<std::codecvt_utf8<wchar_t>> conv;
+    return conv.from_bytes(str);
+}
+
+static std::string wstring_to_string(const std::wstring& wstr) {
+    std::wstring_convert<std::codecvt_utf8<wchar_t>> conv;
+    return conv.to_bytes(wstr);
+}
+#endif
 
 // ==================== Экранирование JSON ====================
 static std::string jsonEscape(const std::string& s) {
@@ -79,118 +75,40 @@ static std::string jsonEscape(const std::string& s) {
     return out;
 }
 
-// ==================== Разбор URL ====================
-struct URLParts {
-    std::wstring host;
-    unsigned short port;
-    std::wstring path;
-    bool isHttps;
-};
-
-static bool parseUrl(const std::wstring& url, URLParts& parts) {
-    std::wstring u = url;
-    // Убираем пробелы
-    u.erase(std::remove_if(u.begin(), u.end(), ::isspace), u.end());
-
-    if (u.substr(0, 8) == L"https://") {
-        parts.isHttps = true;
-        u = u.substr(8);
-    } else if (u.substr(0, 7) == L"http://") {
-        parts.isHttps = false;
-        u = u.substr(7);
-    } else {
-        // по умолчанию https
-        parts.isHttps = true;
-    }
-
-    size_t slash = u.find(L'/');
-    if (slash == std::wstring::npos) {
-        parts.host = u;
-        parts.path = L"/";
-    } else {
-        parts.host = u.substr(0, slash);
-        parts.path = u.substr(slash);
-    }
-
-    parts.port = parts.isHttps ? 443 : 80;
-    size_t colon = parts.host.find(L':');
-    if (colon != std::wstring::npos) {
-        parts.port = static_cast<unsigned short>(_wtoi(parts.host.substr(colon + 1).c_str()));
-        parts.host = parts.host.substr(0, colon);
-    }
-
-    return !parts.host.empty();
+// ==================== Отправка HTTP-запроса через libcurl ====================
+static size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
+    ((std::string*)userp)->append((char*)contents, size * nmemb);
+    return size * nmemb;
 }
 
-// ==================== Отправка HTTPS-запроса через WinHTTP ====================
-static std::string winHttpPost(const std::wstring& url,
-                               const std::string& body,
-                               const std::vector<std::wstring>& headers) {
-    URLParts parts;
-    if (!parseUrl(url, parts)) return "";
-
-    HINTERNET hSession = WinHttpOpen(L"Vortex/2.1.12",
-                                     WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-                                     WINHTTP_NO_PROXY_NAME,
-                                     WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!hSession) return "";
-
-    HINTERNET hConnect = WinHttpConnect(hSession, parts.host.c_str(), parts.port, 0);
-    if (!hConnect) {
-        WinHttpCloseHandle(hSession);
-        return "";
-    }
-
-    DWORD flags = (parts.isHttps) ? WINHTTP_FLAG_SECURE : 0;
-    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", parts.path.c_str(),
-                                            NULL, WINHTTP_NO_REFERER,
-                                            WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
-    if (!hRequest) {
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        return "";
-    }
-
-    // Добавляем заголовки
-    for (const auto& h : headers) {
-        WinHttpAddRequestHeaders(hRequest, h.c_str(), -1, WINHTTP_ADDREQ_FLAG_ADD);
-    }
-
-    // Отправляем запрос
-    BOOL result = WinHttpSendRequest(hRequest,
-                                     WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                                     (LPVOID)body.c_str(), (DWORD)body.size(),
-                                     (DWORD)body.size(), 0);
-    if (!result) {
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        return "";
-    }
-
-    // Получаем ответ
-    result = WinHttpReceiveResponse(hRequest, NULL);
-    if (!result) {
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        return "";
-    }
+static std::string httpPost(const std::string& url,
+                            const std::string& body,
+                            const std::vector<std::string>& headers) {
+    CURL* curl = curl_easy_init();
+    if (!curl) return "";
 
     std::string response;
-    DWORD bytesRead = 0;
-    char buffer[4096];
-    do {
-        if (!WinHttpReadData(hRequest, buffer, sizeof(buffer), &bytesRead)) break;
-        if (bytesRead > 0) {
-            response.append(buffer, bytesRead);
-        }
-    } while (bytesRead > 0);
+    struct curl_slist* headerList = nullptr;
+    for (const auto& h : headers) {
+        headerList = curl_slist_append(headerList, h.c_str());
+    }
 
-    WinHttpCloseHandle(hRequest);
-    WinHttpCloseHandle(hConnect);
-    WinHttpCloseHandle(hSession);
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)body.size());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headerList);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L); // временно отключаем проверку сертификата
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
 
+    CURLcode res = curl_easy_perform(curl);
+    curl_slist_free_all(headerList);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) return "";
     return response;
 }
 
@@ -237,21 +155,22 @@ static std::wstring sendOpenAICompatible(const ProviderConfig& config,
                            "\"},{\"role\":\"user\",\"content\":\"" + jsonEscape(user) +
                            "\"}],\"stream\":false}";
 
-    std::wstring fullUrl = config.baseUrl + L"/chat/completions";
-    std::vector<std::wstring> headers;
-    headers.push_back(L"Content-Type: application/json");
-    headers.push_back(L"Authorization: Bearer " + config.apiKey);
+    std::string baseUrl = wstring_to_string(config.baseUrl);
+    std::string apiKey = wstring_to_string(config.apiKey);
+    std::string fullUrl = baseUrl + "/chat/completions";
 
-    std::string response = winHttpPost(fullUrl, jsonBody, headers);
+    std::vector<std::string> headers;
+    headers.push_back("Content-Type: application/json");
+    headers.push_back("Authorization: Bearer " + apiKey);
+
+    std::string response = httpPost(fullUrl, jsonBody, headers);
     if (response.empty()) {
         if (errorMsg) *errorMsg = L"Пустой ответ от провайдера";
         return L"";
     }
 
-    // Извлекаем content
     std::string content = extractJsonString(response, "content");
     if (content.empty()) {
-        // Возможно, ошибка
         std::string error = extractJsonString(response, "message");
         if (error.empty()) error = extractJsonString(response, "error");
         if (errorMsg) *errorMsg = L"Ошибка провайдера: " + string_to_wstring(error);
@@ -275,13 +194,16 @@ static std::wstring sendAnthropic(const ProviderConfig& config,
                            "\",\"messages\":[{\"role\":\"user\",\"content\":\"" + jsonEscape(user) +
                            "\"}],\"max_tokens\":1024}";
 
-    std::wstring fullUrl = config.baseUrl + L"/messages";
-    std::vector<std::wstring> headers;
-    headers.push_back(L"Content-Type: application/json");
-    headers.push_back(L"x-api-key: " + config.apiKey);
-    headers.push_back(L"anthropic-version: 2023-06-01");
+    std::string baseUrl = wstring_to_string(config.baseUrl);
+    std::string apiKey = wstring_to_string(config.apiKey);
+    std::string fullUrl = baseUrl + "/messages";
 
-    std::string response = winHttpPost(fullUrl, jsonBody, headers);
+    std::vector<std::string> headers;
+    headers.push_back("Content-Type: application/json");
+    headers.push_back("x-api-key: " + apiKey);
+    headers.push_back("anthropic-version: 2023-06-01");
+
+    std::string response = httpPost(fullUrl, jsonBody, headers);
     if (response.empty()) {
         if (errorMsg) *errorMsg = L"Пустой ответ от Anthropic";
         return L"";
@@ -308,11 +230,14 @@ static std::wstring sendGemini(const ProviderConfig& config,
     std::string jsonBody = "{\"contents\":[{\"parts\":[{\"text\":\"" + jsonEscape(user) +
                            "\"}]}]}";
 
-    std::wstring fullUrl = config.baseUrl + L"/models/" + config.model + L":generateContent?key=" + config.apiKey;
-    std::vector<std::wstring> headers;
-    headers.push_back(L"Content-Type: application/json");
+    std::string baseUrl = wstring_to_string(config.baseUrl);
+    std::string apiKey = wstring_to_string(config.apiKey);
+    std::string fullUrl = baseUrl + "/models/" + model + ":generateContent?key=" + apiKey;
 
-    std::string response = winHttpPost(fullUrl, jsonBody, headers);
+    std::vector<std::string> headers;
+    headers.push_back("Content-Type: application/json");
+
+    std::string response = httpPost(fullUrl, jsonBody, headers);
     if (response.empty()) {
         if (errorMsg) *errorMsg = L"Пустой ответ от Gemini";
         return L"";
