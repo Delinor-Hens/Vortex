@@ -118,7 +118,7 @@ static void addAssistantMessage(const std::wstring& response) {
     g_memory.saveToFile("vortex_chats.txt");
 }
 
-// ==================== Вспомогательные функции для промпта ====================
+// ==================== Полный промпт с контекстом ====================
 static std::wstring buildFullPrompt(const std::wstring& currentMsg) {
     auto history = g_memory.getHistory();
     std::wstring context;
@@ -146,6 +146,15 @@ int vortex_init(const char* ollama_host) {
     if (model.empty() || model.find(L"[CHAT]") != std::wstring::npos) {
         g_memory.setModel(L"qwen3.5:4b");
     }
+    // Фоновый прогрев модели (быстрый)
+    std::thread warmup_thread([]() {
+        if (!g_memory.getModel().empty()) {
+            std::wstring systemPrompt = getSystemPrompt();
+            std::wstring errorMsg;
+            generateWarmup(g_memory.getModel(), systemPrompt, &errorMsg);
+        }
+    });
+    warmup_thread.detach();
     return 0;
 }
 
@@ -461,8 +470,8 @@ void vortex_free_string(char* str) { free(str); }
 int vortex_warmup() {
     if (!g_memory.getModel().empty()) {
         std::wstring systemPrompt = getSystemPrompt();
-        std::wstring generationMode = g_memory.getGenerationMode();
-        generateBlocking(g_memory.getModel(), L"", systemPrompt, generationMode, nullptr);
+        std::wstring errorMsg;
+        generateWarmup(g_memory.getModel(), systemPrompt, &errorMsg);
     }
     return 0;
 }

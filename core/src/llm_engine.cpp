@@ -15,6 +15,7 @@
 #include <functional>
 #include <thread>
 #include <atomic>
+#include <chrono>
 
 #pragma comment(lib, "kernel32")
 #pragma comment(lib, "user32")
@@ -44,7 +45,6 @@ static std::mutex g_netMutex;
 static bool g_netInitialized = false;
 static std::string g_ollamaHost = "127.0.0.1";
 
-// ==================== Загрузка функций ====================
 static bool loadWinsockFunctions() {
     HMODULE hWs2 = LoadLibraryA("ws2_32.dll");
     if (!hWs2) return false;
@@ -74,7 +74,6 @@ static void ensureNetworkInitialized() {
     }
 }
 
-// ==================== Конвертация UTF-8 <-> UTF-16 ====================
 static std::wstring utf8_to_wstring(const std::string& str) {
     if (str.empty()) return L"";
     int len = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), -1, nullptr, 0);
@@ -93,7 +92,107 @@ static std::string wstring_to_utf8(const std::wstring& wstr) {
     return result;
 }
 
-// ==================== HTTP GET для Ollama ====================
+// ==================== Декодирование \uXXXX ====================
+static std::string decodeUnicodeEscape(const std::string& input) {
+    std::string output;
+    for (size_t i = 0; i < input.length(); ++i) {
+        if (input[i] == '\\' && i + 1 < input.length()) {
+            if (input[i+1] == 'u' && i + 5 < input.length()) {
+                std::string hex = input.substr(i+2, 4);
+                char* endptr = nullptr;
+                unsigned long code = strtoul(hex.c_str(), &endptr, 16);
+                if (endptr && *endptr == '\0') {
+                    if (code <= 0x7F) {
+                        output += static_cast<char>(code);
+                    } else if (code <= 0x7FF) {
+                        output += static_cast<char>(0xC0 | (code >> 6));
+                        output += static_cast<char>(0x80 | (code & 0x3F));
+                    } else if (code <= 0xFFFF) {
+                        output += static_cast<char>(0xE0 | (code >> 12));
+                        output += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+                        output += static_cast<char>(0x80 | (code & 0x3F));
+                    } else {
+                        output += '?';
+                    }
+                    i += 5;
+                    continue;
+                }
+            }
+            switch (input[i+1]) {
+                case 'n': output += '\n'; i++; break;
+                case 't': output += '\t'; i++; break;
+                case 'r': output += '\r'; i++; break;
+                case '\\': output += '\\'; i++; break;
+                case '"': output += '"'; i++; break;
+                case 'b': output += '\b'; i++; break;
+                case 'f': output += '\f'; i++; break;
+                default: output += input[i]; break;
+            }
+            continue;
+        }
+        output += input[i];
+    }
+    return output;
+}
+
+static std::wstring extractResponse(const std::string& json) {
+    const std::string key = "\"response\":\"";
+    size_t pos = json.find(key);
+    if (pos == std::string::npos) return L"";
+
+    pos += key.length();
+    std::string answer;
+    bool escaped = false;
+    for (size_t i = pos; i < json.length(); ++i) {
+        char c = json[i];
+        if (escaped) {
+            switch (c) {
+                case 'n': answer += '\n'; break;
+                case 't': answer += '\t'; break;
+                case 'r': answer += '\r'; break;
+                case '\\': answer += '\\'; break;
+                case '"': answer += '"'; break;
+                case 'b': answer += '\b'; break;
+                case 'f': answer += '\f'; break;
+                case 'u': {
+                    if (i + 4 < json.length()) {
+                        std::string hex = json.substr(i+1, 4);
+                        char* endptr = nullptr;
+                        unsigned long code = strtoul(hex.c_str(), &endptr, 16);
+                        if (endptr && *endptr == '\0') {
+                            if (code <= 0x7F) {
+                                answer += static_cast<char>(code);
+                            } else if (code <= 0x7FF) {
+                                answer += static_cast<char>(0xC0 | (code >> 6));
+                                answer += static_cast<char>(0x80 | (code & 0x3F));
+                            } else if (code <= 0xFFFF) {
+                                answer += static_cast<char>(0xE0 | (code >> 12));
+                                answer += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+                                answer += static_cast<char>(0x80 | (code & 0x3F));
+                            } else {
+                                answer += '?';
+                            }
+                            i += 4;
+                        } else {
+                            answer += 'u';
+                        }
+                    } else {
+                        answer += 'u';
+                    }
+                    break;
+                }
+                default: answer += c;
+            }
+            escaped = false;
+        } else {
+            if (c == '\\') escaped = true;
+            else if (c == '"') break;
+            else answer += c;
+        }
+    }
+    return utf8_to_wstring(decodeUnicodeEscape(answer));
+}
+
 static std::string httpGetOllama(const std::string& path) {
     ensureNetworkInitialized();
     SOCKET sock = psocket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -124,7 +223,6 @@ static std::string httpGetOllama(const std::string& path) {
     return response.substr(pos + 4);
 }
 
-// ==================== HTTP POST для /api/generate ====================
 static std::string httpPostOllamaGenerate(const std::string& body) {
     ensureNetworkInitialized();
     SOCKET sock = psocket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -159,73 +257,13 @@ static std::string httpPostOllamaGenerate(const std::string& body) {
     return response.substr(pos + 4);
 }
 
-// ==================== Извлечение поля "response" ====================
-static std::wstring extractResponse(const std::string& json) {
-    const std::string key = "\"response\":\"";
-    size_t pos = json.find(key);
-    if (pos == std::string::npos) return L"";
-
-    pos += key.length();
-    std::string answer;
-    bool escaped = false;
-    for (size_t i = pos; i < json.length(); ++i) {
-        char c = json[i];
-        if (escaped) {
-            switch (c) {
-                case 'n': answer += '\n'; break;
-                case 't': answer += '\t'; break;
-                case 'r': answer += '\r'; break;
-                case '\\': answer += '\\'; break;
-                case '"': answer += '"'; break;
-                default: answer += c;
-            }
-            escaped = false;
-        } else {
-            if (c == '\\') escaped = true;
-            else if (c == '"') break;
-            else answer += c;
-        }
-    }
-    return utf8_to_wstring(answer);
-}
-
-// ==================== Реализация функций из llm_engine.h ====================
-std::vector<std::wstring> getAvailableModels() {
-    ensureNetworkInitialized();
-    std::vector<std::wstring> models;
-    std::string resp = httpGetOllama("/api/tags");
-    if (resp.empty()) return models;
-    size_t pos = 0;
-    while ((pos = resp.find("\"name\":\"", pos)) != std::string::npos) {
-        pos += 8;
-        size_t end = resp.find('"', pos);
-        if (end != std::string::npos) {
-            models.push_back(utf8_to_wstring(resp.substr(pos, end - pos)));
-            pos = end + 1;
-        } else break;
-    }
-    return models;
-}
-
-bool pullModel(const std::wstring& modelName) {
-    return false;
-}
-
-std::wstring generateBlocking(const std::wstring& model,
-                              const std::wstring& prompt,
-                              const std::wstring& systemPrompt,
-                              const std::wstring& generationMode,
-                              std::wstring* errorMsg) {
-    // Используем общую функцию с пустым списком изображений
-    return generateBlockingWithImages(model, prompt, systemPrompt, {}, generationMode, errorMsg);
-}
-
-std::wstring generateBlockingWithImages(const std::wstring& model,
-                                        const std::wstring& prompt,
-                                        const std::wstring& systemPrompt,
-                                        const std::vector<std::string>& imagesBase64,
-                                        const std::wstring& generationMode,
-                                        std::wstring* errorMsg) {
+// Общая функция генерации (с изображениями или без)
+static std::wstring generateBlockingInternal(const std::wstring& model,
+                                             const std::wstring& prompt,
+                                             const std::wstring& systemPrompt,
+                                             const std::vector<std::string>& imagesBase64,
+                                             const std::wstring& generationMode,
+                                             std::wstring* errorMsg) {
     ensureNetworkInitialized();
 
     std::string utf8model = wstring_to_utf8(model);
@@ -260,21 +298,15 @@ std::wstring generateBlockingWithImages(const std::wstring& model,
     std::string escapedPrompt = jsonEscape(utf8prompt);
     std::string escapedSystem = jsonEscape(utf8system);
 
-    int numPredict = 512;
+    int numPredict = 256;
     double temperature = 0.6;
     double topP = 0.9;
     if (generationMode == L"instant") {
-        numPredict = 128;
-        temperature = 0.8;
-        topP = 0.9;
+        numPredict = 128; temperature = 0.8; topP = 0.9;
     } else if (generationMode == L"normal") {
-        numPredict = 512;
-        temperature = 0.6;
-        topP = 0.9;
+        numPredict = 256; temperature = 0.6; topP = 0.9;
     } else if (generationMode == L"thinking") {
-        numPredict = 1024;
-        temperature = 0.3;
-        topP = 0.9;
+        numPredict = -1; temperature = 0.3; topP = 0.9; // без ограничения
     }
 
     std::string jsonBody = "{\"model\":\"" + escapedModel +
@@ -282,11 +314,9 @@ std::wstring generateBlockingWithImages(const std::wstring& model,
                            "\",\"stream\":false,\"think\":false,\"system\":\"" + escapedSystem +
                            "\",\"options\":{\"num_predict\":" + std::to_string(numPredict) +
                            ",\"temperature\":" + std::to_string(temperature) +
-                           ",\"top_p\":" + std::to_string(topP) + "}";
+                           ",\"top_p\":" + std::to_string(topP) + "}}";
 
-    // Добавляем изображения, если есть
     if (!imagesBase64.empty()) {
-        // Находим позицию перед "options" и вставляем "images"
         size_t pos = jsonBody.find("\"options\"");
         if (pos != std::string::npos) {
             std::string imagesJson = "\"images\":[";
@@ -299,15 +329,24 @@ std::wstring generateBlockingWithImages(const std::wstring& model,
         }
     }
 
-    std::string response = httpPostOllamaGenerate(jsonBody);
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        std::string response = httpPostOllamaGenerate(jsonBody);
+        if (response.empty()) {
+            if (errorMsg) *errorMsg = L"Empty response from Ollama";
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+            continue;
+        }
 
-    if (response.empty()) {
-        if (errorMsg) *errorMsg = L"Empty response from Ollama";
-        return L"";
-    }
+        if (response.find("\"done_reason\":\"load\"") != std::string::npos) {
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            continue;
+        }
 
-    std::wstring answer = extractResponse(response);
-    if (answer.empty()) {
+        std::wstring answer = extractResponse(response);
+        if (!answer.empty()) {
+            return answer;
+        }
+
         size_t errPos = response.find("\"error\":\"");
         if (errPos != std::string::npos) {
             errPos += 10;
@@ -321,16 +360,52 @@ std::wstring generateBlockingWithImages(const std::wstring& model,
                 else errMsg += c;
             }
             if (errorMsg) *errorMsg = L"Ollama error: " + utf8_to_wstring(errMsg);
-        } else {
-            if (errorMsg) *errorMsg = L"Response field not found";
+            return L"";
         }
-        return L"";
     }
 
-    return answer;
+    if (errorMsg) *errorMsg = L"Модель не ответила";
+    return L"";
 }
 
-// ==================== Потоковая генерация (Ollama) ====================
+std::vector<std::wstring> getAvailableModels() {
+    ensureNetworkInitialized();
+    std::vector<std::wstring> models;
+    std::string resp = httpGetOllama("/api/tags");
+    if (resp.empty()) return models;
+    size_t pos = 0;
+    while ((pos = resp.find("\"name\":\"", pos)) != std::string::npos) {
+        pos += 8;
+        size_t end = resp.find('"', pos);
+        if (end != std::string::npos) {
+            models.push_back(utf8_to_wstring(resp.substr(pos, end - pos)));
+            pos = end + 1;
+        } else break;
+    }
+    return models;
+}
+
+bool pullModel(const std::wstring& modelName) {
+    return false;
+}
+
+std::wstring generateBlocking(const std::wstring& model,
+                              const std::wstring& prompt,
+                              const std::wstring& systemPrompt,
+                              const std::wstring& generationMode,
+                              std::wstring* errorMsg) {
+    return generateBlockingInternal(model, prompt, systemPrompt, {}, generationMode, errorMsg);
+}
+
+std::wstring generateBlockingWithImages(const std::wstring& model,
+                                        const std::wstring& prompt,
+                                        const std::wstring& systemPrompt,
+                                        const std::vector<std::string>& imagesBase64,
+                                        const std::wstring& generationMode,
+                                        std::wstring* errorMsg) {
+    return generateBlockingInternal(model, prompt, systemPrompt, imagesBase64, generationMode, errorMsg);
+}
+
 bool generateStreamingOllama(const std::wstring& model,
                              const std::wstring& prompt,
                              const std::wstring& systemPrompt,
@@ -371,22 +446,12 @@ bool generateStreamingOllama(const std::wstring& model,
     std::string escapedPrompt = jsonEscape(utf8prompt);
     std::string escapedSystem = jsonEscape(utf8system);
 
-    int numPredict = 512;
+    int numPredict = 256;
     double temperature = 0.6;
     double topP = 0.9;
-    if (generationMode == L"instant") {
-        numPredict = 128;
-        temperature = 0.8;
-        topP = 0.9;
-    } else if (generationMode == L"normal") {
-        numPredict = 512;
-        temperature = 0.6;
-        topP = 0.9;
-    } else if (generationMode == L"thinking") {
-        numPredict = 1024;
-        temperature = 0.3;
-        topP = 0.9;
-    }
+    if (generationMode == L"instant") { numPredict = 128; temperature = 0.8; }
+    else if (generationMode == L"normal") { numPredict = 256; temperature = 0.6; }
+    else if (generationMode == L"thinking") { numPredict = -1; temperature = 0.3; }
 
     std::string jsonBody = "{\"model\":\"" + escapedModel +
                            "\",\"prompt\":\"" + escapedPrompt +
@@ -424,7 +489,7 @@ bool generateStreamingOllama(const std::wstring& model,
     }
 
     std::string buffer;
-    char recvBuf[4096];
+    char recvBuf[16384]; // увеличенный буфер
     int received;
     bool headerParsed = false;
     std::string body;
@@ -458,6 +523,40 @@ bool generateStreamingOllama(const std::wstring& model,
     return true;
 }
 
-// ==================== Заглушки ====================
+// Быстрый прогрев модели
+bool generateWarmup(const std::wstring& model, const std::wstring& systemPrompt, std::wstring* errorMsg) {
+    ensureNetworkInitialized();
+
+    std::string utf8model = wstring_to_utf8(model);
+    std::string utf8system = wstring_to_utf8(systemPrompt);
+    auto jsonEscape = [](const std::string& s) {
+        std::string out;
+        for (unsigned char c : s) {
+            switch (c) {
+                case '"': out += "\\\""; break;
+                case '\\': out += "\\\\"; break;
+                case '\n': out += "\\n"; break;
+                case '\r': out += "\\r"; break;
+                case '\t': out += "\\t"; break;
+                default: out += c;
+            }
+        }
+        return out;
+    };
+
+    std::string escapedModel = jsonEscape(utf8model);
+    std::string escapedSystem = jsonEscape(utf8system);
+    std::string jsonBody = "{\"model\":\"" + escapedModel +
+                           "\",\"prompt\":\"\",\"stream\":false,\"think\":false,\"system\":\"" + escapedSystem +
+                           "\",\"options\":{\"num_predict\":1,\"temperature\":0.0,\"top_p\":1.0}}";
+
+    std::string response = httpPostOllamaGenerate(jsonBody);
+    if (response.empty()) {
+        if (errorMsg) *errorMsg = L"Empty response";
+        return false;
+    }
+    return true;
+}
+
 std::wstring searchWeb(const std::wstring& query) { return L""; }
 std::wstring fetchWeather(const std::wstring& city) { return L""; }

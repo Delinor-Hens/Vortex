@@ -92,7 +92,6 @@ int MemoryStore::createChat(const std::wstring& name) {
 
 bool MemoryStore::deleteChat(int chatId) {
     std::lock_guard<std::mutex> lock(m_mutex);
-    if (chatId == 0) return false;
     auto it = std::find_if(m_chats.begin(), m_chats.end(),
                            [chatId](const std::pair<int, std::wstring>& p) {
                                return p.first == chatId;

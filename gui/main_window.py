@@ -36,7 +36,7 @@ class MainWindow(tk.Tk):
         self.minigame_window = None
         self.minigame_after_id = None
         self.attachments = []
-        self.pending_message = None   # для сообщений, отправленных во время прогрева
+        self.pending_message = None
 
         self._load_music_volume()
         self._setup_styles()
@@ -54,7 +54,7 @@ class MainWindow(tk.Tk):
         except:
             pass
 
-        # Запускаем прогрев и экран загрузки
+        # Запускаем прогрев с экраном загрузки, но ввод разрешён
         self._start_warmup()
 
     # ---------- Вспомогательные методы ----------
@@ -211,7 +211,7 @@ class MainWindow(tk.Tk):
         self.notebook.add(self.chat_frame, text="Чат")
 
         # Вкладка "Код"
-        self.code_widget = CodeWidget(self.notebook, self.core)
+        self.code_widget = CodeWidget(self.notebook, self.core, app_dir=self._get_app_dir())
         self.notebook.add(self.code_widget, text="Код")
 
         # Вкладка "Плагины"
@@ -336,12 +336,13 @@ class MainWindow(tk.Tk):
             else:
                 btn.configure(style="TButton")
 
-    # ---------- Экран загрузки и мини-игра при прогреве ----------
+    # ---------- Экран загрузки и прогрев ----------
     def _start_warmup(self):
         self._show_loading_overlay()
-        self._set_input_state(False)
+        self._set_input_state(True)   # разрешаем ввод сразу
+        self._start_progress()
 
-        # Таймер на открытие мини-игры, если прогрев затянется
+        # Таймер для мини-игры при долгом прогреве
         self.warmup_minigame_after_id = self.after(10000, self._show_minigame_during_warmup)
 
         def warmup():
@@ -362,8 +363,13 @@ class MainWindow(tk.Tk):
         if self.minigame_window:
             self._on_minigame_close()
 
+        # Прогресс-бар на 100%
+        if hasattr(self, 'loading_progress'):
+            self.loading_progress['value'] = 100
+            self.loading_progress.update_idletasks()
+
         self._hide_loading_overlay()
-        self._set_input_state(True)
+        self._stop_progress()
 
         if self.pending_message:
             msg, images = self.pending_message
@@ -382,6 +388,12 @@ class MainWindow(tk.Tk):
         self.loading_text = tk.Label(self.loading_overlay, text="Загрузка модели...",
                                      font=("Segoe UI", 14), fg="#e0e0e0", bg="#121212")
         self.loading_text.pack(pady=10)
+
+        # Прогресс-бар
+        self.loading_progress = ttk.Progressbar(self.loading_overlay, mode='determinate', maximum=100)
+        self.loading_progress.pack(pady=20, padx=50, fill=tk.X)
+        self.loading_progress_value = 0
+
         self._animate_loading_text()
 
     def _animate_loading_text(self):
@@ -391,7 +403,13 @@ class MainWindow(tk.Tk):
         dots = current.split("...")[0].count(".")
         dots = (dots + 1) % 4
         self.loading_text.config(text=f"Загрузка модели{'.' * dots}")
-        self.after(400, self._animate_loading_text)
+
+        if hasattr(self, 'loading_progress'):
+            if self.loading_progress_value < 90:
+                self.loading_progress_value += 1
+                self.loading_progress['value'] = self.loading_progress_value
+
+        self.after(200, self._animate_loading_text)
 
     def _hide_loading_overlay(self):
         if hasattr(self, 'loading_overlay'):
@@ -469,6 +487,7 @@ class MainWindow(tk.Tk):
             messagebox.showerror("Ошибка", str(e))
 
     def _delete_chat(self):
+        # Разрешаем удаление любого чата (включая Default)
         if self.current_chat_id < 0:
             return
         if messagebox.askyesno("Подтверждение", "Удалить текущий чат?"):
@@ -514,11 +533,10 @@ class MainWindow(tk.Tk):
     # ---------- Отправка сообщений ----------
     def _send(self):
         if not self.warmup_done:
-            # Сохраняем сообщение и показываем подсказку
             msg = self.entry.get().strip()
             if not msg:
                 return
-            self.pending_message = (msg, [])   # изображения пока не обрабатываем
+            self.pending_message = (msg, [])
             self.entry.delete(0, tk.END)
             self._append_message("Вы", msg, "user")
             self._start_progress()
@@ -539,7 +557,6 @@ class MainWindow(tk.Tk):
             print("[DEBUG] Пустое сообщение")
             return
 
-        # Обрабатываем вложения
         images_base64 = []
         file_texts = []
         for path in self.attachments:

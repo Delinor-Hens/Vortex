@@ -15,6 +15,7 @@
 #include <sstream>
 #include <cstdint>
 #include <urlmon.h>
+#include <winioctl.h>
 
 #pragma comment(lib, "urlmon.lib")
 #pragma comment(lib, "comctl32.lib")
@@ -84,12 +85,18 @@ bool ExtractDataFilesTo(const std::wstring& data0Path,
                         const std::wstring& destFolder);
 std::wstring GetCurrentExeDir();
 std::string WStringToUTF8(const std::wstring& wstr);
-bool RunProcessAndWait(const std::wstring& cmdLine, DWORD timeoutMs = INFINITE);
+bool RunProcessAndWait(const std::wstring& cmdLine, DWORD timeoutMs = INFINITE); // теперь проверяет код возврата
 std::wstring FindOllamaExecutable();
 bool IsOllamaModelAvailable(const std::wstring& modelName);
 bool WaitForOllamaServer(DWORD timeoutMs = 30000);
 std::wstring utf8_to_wstring(const std::string& str);
 void LogMessage(const std::wstring& msg);
+
+bool IsSsdDrive(wchar_t driveLetter);
+ULONGLONG GetFreeSpaceOnDrive(wchar_t driveLetter);
+std::wstring FindBestModelDirectory();
+void SetOllamaModelsEnvironment(const std::wstring& modelsPath);
+void RemoveOllamaModelsEnvironment();
 
 // ====================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ======================
 std::wstring GetCurrentExeDir() {
@@ -127,7 +134,6 @@ bool FileExists(const std::wstring& fullPath) {
 
 std::wstring FindVortexExe(const std::wstring& rootFolder) {
     if (!fs::exists(rootFolder) || !fs::is_directory(rootFolder)) return L"";
-
     std::vector<std::wstring> exeNames = {
         L"vortex.exe", L"Vortex.exe", L"vortex_launcher.exe", L"Vortex_launcher.exe"
     };
@@ -170,7 +176,9 @@ bool IsVortexInstalled() {
     return false;
 }
 
+// Исправлено: теперь ищем только реальные файлы, без where
 std::wstring FindOllamaExecutable() {
+    // 1. Проверяем PATH
     wchar_t path[MAX_PATH];
     DWORD len = GetEnvironmentVariableW(L"PATH", path, MAX_PATH);
     if (len > 0 && len < MAX_PATH) {
@@ -183,14 +191,24 @@ std::wstring FindOllamaExecutable() {
                 return dir + L"\\ollama.exe";
         }
     }
+    // 2. Стандартные пути
     std::vector<std::wstring> paths = {
         L"C:\\Program Files\\Ollama\\ollama.exe",
         L"C:\\Program Files (x86)\\Ollama\\ollama.exe",
-        L"C:\\Users\\Public\\Ollama\\ollama.exe",
-        L"C:\\Users\\" + std::wstring(_wgetenv(L"USERNAME")) + L"\\AppData\\Local\\Programs\\Ollama\\ollama.exe"
+        L"C:\\Users\\Public\\Ollama\\ollama.exe"
     };
+    wchar_t expanded[MAX_PATH];
     for (const auto& p : paths) {
-        if (FileExists(p)) return p;
+        ExpandEnvironmentStringsW(p.c_str(), expanded, MAX_PATH);
+        if (FileExists(expanded)) return expanded;
+    }
+    // 3. %LOCALAPPDATA%\Programs\Ollama
+    wchar_t localAppData[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, localAppData))) {
+        std::wstring localPath = std::wstring(localAppData) + L"\\Programs\\Ollama\\ollama.exe";
+        if (FileExists(localPath)) return localPath;
+        localPath = std::wstring(localAppData) + L"\\Ollama\\ollama.exe";
+        if (FileExists(localPath)) return localPath;
     }
     return L"";
 }
@@ -236,21 +254,17 @@ void WriteUninstallRegistry(const std::wstring& installPath) {
         std::wstring displayName = L"Vortex 2.1.12";
         std::wstring displayVersion = L"2.1.12";
         std::wstring publisher = L"Delinor";
-
-        // Путь к копии установщика (uninstall.exe)
-        std::wstring uninstallExe = installPath + L"\\uninstall.exe";
-        std::wstring uninstallString = L"\"" + uninstallExe + L"\" /uninstall";
-
+        wchar_t exePath[MAX_PATH];
+        GetModuleFileNameW(NULL, exePath, MAX_PATH);
+        std::wstring uninstallString = L"\"" + std::wstring(exePath) + L"\" /uninstall";
         std::wstring installLocation = installPath;
         std::wstring displayIcon = installPath + L"\\logo.ico";
-
         RegSetValueExW(hKey, L"DisplayName", 0, REG_SZ, (const BYTE*)displayName.c_str(), (displayName.size()+1)*sizeof(wchar_t));
         RegSetValueExW(hKey, L"DisplayVersion", 0, REG_SZ, (const BYTE*)displayVersion.c_str(), (displayVersion.size()+1)*sizeof(wchar_t));
         RegSetValueExW(hKey, L"Publisher", 0, REG_SZ, (const BYTE*)publisher.c_str(), (publisher.size()+1)*sizeof(wchar_t));
         RegSetValueExW(hKey, L"InstallLocation", 0, REG_SZ, (const BYTE*)installLocation.c_str(), (installLocation.size()+1)*sizeof(wchar_t));
         RegSetValueExW(hKey, L"UninstallString", 0, REG_SZ, (const BYTE*)uninstallString.c_str(), (uninstallString.size()+1)*sizeof(wchar_t));
         RegSetValueExW(hKey, L"DisplayIcon", 0, REG_SZ, (const BYTE*)displayIcon.c_str(), (displayIcon.size()+1)*sizeof(wchar_t));
-
         DWORD noModify = 1, noRepair = 1;
         RegSetValueExW(hKey, L"NoModify", 0, REG_DWORD, (const BYTE*)&noModify, sizeof(noModify));
         RegSetValueExW(hKey, L"NoRepair", 0, REG_DWORD, (const BYTE*)&noRepair, sizeof(noRepair));
@@ -285,15 +299,11 @@ void SetProgressValue(int percent) {
     SendMessageW(hProgressBar, PBM_SETPOS, percent, 0);
 }
 
-// ==================== ЛОГИРОВАНИЕ ====================
 void LogMessage(const std::wstring& msg) {
     std::wofstream log(L"install.log", std::ios::app);
-    if (log) {
-        log << msg << std::endl;
-    }
+    if (log) log << msg << std::endl;
 }
 
-// ==================== ПРЕОБРАЗОВАНИЕ СТРОК ====================
 std::string WStringToUTF8(const std::wstring& wstr) {
     if (wstr.empty()) return "";
     int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
@@ -311,7 +321,7 @@ std::wstring utf8_to_wstring(const std::string& str) {
     return result;
 }
 
-// ==================== ЗАПУСК ПРОЦЕССА И ОЖИДАНИЕ ====================
+// Исправленная RunProcessAndWait: возвращает true только при коде возврата 0
 bool RunProcessAndWait(const std::wstring& cmdLine, DWORD timeoutMs) {
     STARTUPINFOW si = {0};
     si.cb = sizeof(si);
@@ -325,14 +335,20 @@ bool RunProcessAndWait(const std::wstring& cmdLine, DWORD timeoutMs) {
                         CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
         return false;
     }
-
     DWORD waitResult = WaitForSingleObject(pi.hProcess, timeoutMs);
+    if (waitResult != WAIT_OBJECT_0) {
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        return false;
+    }
+    DWORD exitCode = 0;
+    GetExitCodeProcess(pi.hProcess, &exitCode);
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
-    return (waitResult == WAIT_OBJECT_0);
+    return exitCode == 0;
 }
 
-// ==================== ПРОВЕРКА МОДЕЛИ OLLAMA ====================
 bool IsOllamaModelAvailable(const std::wstring& modelName) {
     std::wstring ollamaPath = FindOllamaExecutable();
     if (ollamaPath.empty()) return false;
@@ -375,7 +391,6 @@ bool IsOllamaModelAvailable(const std::wstring& modelName) {
     return (woutput.find(lowerModel) != std::wstring::npos);
 }
 
-// ==================== ОЖИДАНИЕ ЗАПУСКА OLLAMA ====================
 bool WaitForOllamaServer(DWORD timeoutMs) {
     DWORD start = GetTickCount();
     while (GetTickCount() - start < timeoutMs) {
@@ -389,7 +404,122 @@ bool WaitForOllamaServer(DWORD timeoutMs) {
     return false;
 }
 
-// ==================== УПАКОВКА / РАСПАКОВКА DATA-ФАЙЛОВ ====================
+// ==================== ОПРЕДЕЛЕНИЕ ДИСКА ====================
+bool IsSsdDrive(wchar_t driveLetter) {
+    wchar_t path[8] = L"\\\\.\\X:";
+    path[4] = driveLetter;
+
+    HANDLE hDevice = CreateFileW(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                 nullptr, OPEN_EXISTING, 0, nullptr);
+    if (hDevice == INVALID_HANDLE_VALUE)
+        return false;
+
+    STORAGE_PROPERTY_QUERY query = {};
+    query.PropertyId = StorageDeviceProperty;
+    query.QueryType = PropertyStandardQuery;
+
+    std::vector<BYTE> buffer(sizeof(STORAGE_DEVICE_DESCRIPTOR) + 512);
+    STORAGE_DEVICE_DESCRIPTOR* desc = reinterpret_cast<STORAGE_DEVICE_DESCRIPTOR*>(buffer.data());
+    desc->Size = sizeof(STORAGE_DEVICE_DESCRIPTOR);
+
+    DWORD bytesReturned = 0;
+    bool isSsd = false;
+    if (DeviceIoControl(hDevice,
+                        IOCTL_STORAGE_QUERY_PROPERTY,
+                        &query,
+                        sizeof(query),
+                        desc,
+                        buffer.size(),
+                        &bytesReturned,
+                        nullptr)) {
+        if (desc->BusType == BusTypeSata || desc->BusType == BusTypeNvme) {
+            isSsd = true;
+        }
+    }
+
+    CloseHandle(hDevice);
+    return isSsd;
+}
+
+ULONGLONG GetFreeSpaceOnDrive(wchar_t driveLetter) {
+    wchar_t root[4] = L"X:\\";
+    root[0] = driveLetter;
+    ULARGE_INTEGER freeBytesAvailable;
+    ULARGE_INTEGER totalBytes;
+    ULARGE_INTEGER totalFreeBytes;
+    if (!GetDiskFreeSpaceExW(root, &freeBytesAvailable, &totalBytes, &totalFreeBytes))
+        return 0;
+    return freeBytesAvailable.QuadPart;
+}
+
+std::wstring FindBestModelDirectory() {
+    const DWORD driveMask = GetLogicalDrives();
+    std::vector<std::pair<wchar_t, ULONGLONG>> ssdCandidates;
+    std::vector<std::pair<wchar_t, ULONGLONG>> hddCandidates;
+
+    for (wchar_t letter = L'A'; letter <= L'Z'; ++letter) {
+        if (!(driveMask & (1 << (letter - L'A'))))
+            continue;
+
+        UINT driveType = GetDriveTypeW((std::wstring(1, letter) + L":\\").c_str());
+        if (driveType != DRIVE_FIXED)
+            continue;
+
+        ULONGLONG freeSpace = GetFreeSpaceOnDrive(letter);
+        if (IsSsdDrive(letter)) {
+            ssdCandidates.push_back({letter, freeSpace});
+        } else {
+            hddCandidates.push_back({letter, freeSpace});
+        }
+    }
+
+    auto sortByFreeDesc = [](const auto& a, const auto& b) {
+        return a.second > b.second;
+    };
+    std::sort(ssdCandidates.begin(), ssdCandidates.end(), sortByFreeDesc);
+    std::sort(hddCandidates.begin(), hddCandidates.end(), sortByFreeDesc);
+
+    const ULONGLONG MIN_SSD_SPACE = 10ULL * 1024ULL * 1024ULL * 1024ULL; // 10 ГБ
+
+    for (const auto& [letter, freeSpace] : ssdCandidates) {
+        if (freeSpace >= MIN_SSD_SPACE) {
+            return std::wstring(1, letter) + L":\\ollama_models";
+        }
+    }
+
+    if (!hddCandidates.empty()) {
+        return std::wstring(1, hddCandidates.front().first) + L":\\ollama_models";
+    }
+
+    return L"C:\\ollama_models";
+}
+
+void SetOllamaModelsEnvironment(const std::wstring& modelsPath) {
+    CreateDirectoryW(modelsPath.c_str(), NULL);
+    HKEY hKey;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Environment", 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
+        RegSetValueExW(hKey, L"OLLAMA_MODELS", 0, REG_SZ,
+                       (const BYTE*)modelsPath.c_str(),
+                       (modelsPath.size() + 1) * sizeof(wchar_t));
+        RegCloseKey(hKey);
+    }
+    SetEnvironmentVariableW(L"OLLAMA_MODELS", modelsPath.c_str());
+    SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+                        (LPARAM)L"Environment", SMTO_ABORTIFHUNG, 5000, nullptr);
+}
+
+void RemoveOllamaModelsEnvironment() {
+    HKEY hKey;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Environment", 0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
+        RegDeleteValueW(hKey, L"OLLAMA_MODELS");
+        RegCloseKey(hKey);
+    }
+    SetEnvironmentVariableW(L"OLLAMA_MODELS", nullptr);
+    SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+                        (LPARAM)L"Environment", SMTO_ABORTIFHUNG, 5000, nullptr);
+}
+
+// ==================== УПАКОВКА / РАСПАКОВКА ====================
 bool PackVortexToDataFiles(const std::wstring& vortexFolder,
                            const std::wstring& data0Path,
                            const std::wstring& data1Path) {
@@ -399,7 +529,6 @@ bool PackVortexToDataFiles(const std::wstring& vortexFolder,
             if (entry.is_regular_file())
                 files.push_back(entry.path());
         }
-
         std::sort(files.begin(), files.end());
 
         std::ofstream out0(WStringToUTF8(data0Path), std::ios::binary | std::ios::trunc);
@@ -542,7 +671,7 @@ bool ExtractDataFilesTo(const std::wstring& data0Path,
     return true;
 }
 
-// ==================== ПОТОК УСТАНОВКИ OLLAMA ====================
+// ==================== УСТАНОВКА OLLAMA ====================
 DWORD WINAPI InstallOllamaThread(LPVOID lpParam) {
     LogMessage(L"Начало установки Ollama/модели");
     SetProgressText(L"Проверка Ollama...");
@@ -550,7 +679,6 @@ DWORD WINAPI InstallOllamaThread(LPVOID lpParam) {
 
     bool ollamaInstalled = IsOllamaInstalled();
     if (!ollamaInstalled) {
-        // Установка VC++ Redistributable (если ещё не выполнено)
         SetProgressText(L"Установка Visual C++ Redistributable...");
         SetProgressValue(40);
         wchar_t tempPath[MAX_PATH];
@@ -563,50 +691,36 @@ DWORD WINAPI InstallOllamaThread(LPVOID lpParam) {
             DeleteFileW(vcPath.c_str());
         }
 
-        // Установка Ollama
         SetProgressText(L"Установка Ollama...");
         SetProgressValue(50);
-
         bool wingetAvailable = false;
         {
             std::wstring cmd = L"cmd.exe /c where winget >nul 2>nul";
-            if (RunProcessAndWait(cmd, 5000)) {
-                wingetAvailable = true;
-            }
+            if (RunProcessAndWait(cmd, 5000)) wingetAvailable = true;
         }
-
         bool installSuccess = false;
         if (wingetAvailable) {
             SetProgressText(L"Установка Ollama через winget...");
             SetProgressValue(60);
             std::wstring cmd = L"cmd.exe /c winget install Ollama.Ollama --silent --accept-package-agreements --accept-source-agreements";
             installSuccess = RunProcessAndWait(cmd, 300000);
-            if (installSuccess) {
-                Sleep(2000);
-                ollamaInstalled = IsOllamaInstalled();
-            }
+            if (installSuccess) { Sleep(2000); ollamaInstalled = IsOllamaInstalled(); }
         }
-
         if (!ollamaInstalled) {
             SetProgressText(L"Загрузка установщика Ollama...");
             SetProgressValue(70);
             GetTempPathW(MAX_PATH, tempPath);
             std::wstring installerPath = std::wstring(tempPath) + L"OllamaSetup.exe";
-
             HRESULT hr = URLDownloadToFileW(NULL, L"https://ollama.com/download/OllamaSetup.exe", installerPath.c_str(), 0, NULL);
             if (SUCCEEDED(hr) && FileExists(installerPath)) {
                 SetProgressText(L"Установка Ollama (запуск установщика)...");
                 SetProgressValue(80);
                 std::wstring cmd = L"\"" + installerPath + L"\" /VERYSILENT /NORESTART";
                 installSuccess = RunProcessAndWait(cmd, 300000);
-                if (installSuccess) {
-                    Sleep(2000);
-                    ollamaInstalled = IsOllamaInstalled();
-                }
+                if (installSuccess) { Sleep(2000); ollamaInstalled = IsOllamaInstalled(); }
                 DeleteFileW(installerPath.c_str());
             }
         }
-
         if (!ollamaInstalled) {
             SetProgressText(L"Не удалось установить Ollama. Установите её вручную с https://ollama.com/download");
             SetProgressValue(0);
@@ -634,10 +748,8 @@ DWORD WINAPI InstallOllamaThread(LPVOID lpParam) {
     if (!IsOllamaModelAvailable(modelName)) {
         SetProgressText(L"Загрузка модели " + modelName + L"... Это может занять несколько минут.");
         SetProgressValue(90);
-
         std::wstring pullCmd = L"cmd.exe /c ollama pull " + modelName;
         bool pullSuccess = RunProcessAndWait(pullCmd, 600000);
-
         if (!pullSuccess || !IsOllamaModelAvailable(modelName)) {
             SetProgressText(L"Не удалось автоматически загрузить модель. Загрузите вручную: ollama pull " + modelName);
             SetProgressValue(0);
@@ -671,13 +783,18 @@ void PerformInstall() {
 
     fs::create_directories(installPath);
 
-    // Копируем текущий установщик как uninstall.exe
+    // Копируем установщик как uninstall.exe
     wchar_t selfPath[MAX_PATH];
     GetModuleFileNameW(NULL, selfPath, MAX_PATH);
     std::wstring uninstallExe = installPath + L"\\uninstall.exe";
     if (!CopyFileW(selfPath, uninstallExe.c_str(), FALSE)) {
         LogMessage(L"Не удалось скопировать uninstall.exe");
     }
+
+    // Определяем папку для моделей Ollama и устанавливаем переменную
+    std::wstring modelDir = FindBestModelDirectory();
+    SetOllamaModelsEnvironment(modelDir);
+    LogMessage(L"Папка моделей Ollama: " + modelDir);
 
     std::wstring exeDir = GetCurrentExeDir();
     std::wstring vortexFolder = exeDir + L"\\" + VORTEX_FOLDER;
@@ -735,7 +852,6 @@ void PerformInstall() {
 
     WriteUninstallRegistry(installPath);
 
-    // Запускаем поток установки Ollama и модели
     SetProgressText(L"Подготовка к установке Ollama и модели...");
     SetProgressValue(30);
     CreateThread(NULL, 0, InstallOllamaThread, NULL, 0, NULL);
@@ -759,6 +875,7 @@ void PerformUninstall() {
     RemoveShortcut(std::wstring(startMenu) + L"\\Vortex.lnk");
 
     RemoveRegistryKeys();
+    RemoveOllamaModelsEnvironment();
     LogMessage(L"Удаление завершено");
     MessageBoxW(NULL, L"Удаление завершено.", L"Vortex", MB_OK);
 }
