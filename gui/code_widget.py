@@ -233,7 +233,7 @@ class CodeWidget(ttk.Frame):
             self.fix_button.state(['disabled'])
             self._append_output("🗑 Проект удалён.")
 
-    # ---------- Агентский режим с потоковой генерацией ----------
+    # ---------- Агентский режим с генерацией ----------
     def _generate_project(self):
         task = self.task_entry.get().strip()
         language = self.language_var.get()
@@ -246,9 +246,9 @@ class CodeWidget(ttk.Frame):
         threading.Thread(target=self._agent_worker, args=(task, language), daemon=True).start()
 
     def _agent_worker(self, task, language):
-        previous_mode = self.core.get_current_generation_mode()  # сохраняем режим
+        previous_mode = self.core.get_current_generation_mode()
         try:
-            self.core.set_generation_mode("thinking")  # принудительно включаем thinking для длинного ответа
+            self.core.set_generation_mode("thinking")  # без ограничения длины
             self.after(0, self._append_output, "📝 Генерация кода...\n")
 
             prompt = (
@@ -258,15 +258,14 @@ class CodeWidget(ttk.Frame):
                 f"Никакого текста до или после кода."
             )
 
-            if self.core.get_active_provider() == 0:  # Ollama
-                code = self._generate_with_stream(prompt)
-            else:
-                code = self.core.send_message(prompt)
+            # Используем блокирующий вызов для надёжности
+            code = self.core.send_message(prompt)
 
             if not code or code.startswith("[Ошибка:"):
                 self.after(0, self._append_output, f"❌ Ошибка при генерации: {code if code else 'пустой ответ'}")
                 return
 
+            # Очистка от markdown
             code = re.sub(r'^```[a-zA-Z0-9_+-]*\s*\n', '', code, count=1)
             code = re.sub(r'\n```\s*$', '', code, count=1)
             if '```' in code:
@@ -314,41 +313,8 @@ class CodeWidget(ttk.Frame):
             self.after(0, self._append_output, f"❌ Ошибка агента: {e}")
         finally:
             if previous_mode:
-                self.core.set_generation_mode(previous_mode)  # восстанавливаем режим
+                self.core.set_generation_mode(previous_mode)
             self.after(0, lambda: self.progress.stop())
-
-    def _generate_with_stream(self, prompt):
-        full_code = []
-        self.core.start_stream(prompt)
-
-        buffer = []
-        last_flush = time.time()
-        while self.core.is_generating():
-            chunk = self.core.get_stream_chunk()
-            if chunk:
-                full_code.append(chunk)
-                buffer.append(chunk)
-                if time.time() - last_flush > 0.1:
-                    flush_text = ''.join(buffer)
-                    if flush_text:
-                        self.after(0, self._append_output, flush_text, end='')
-                    buffer.clear()
-                    last_flush = time.time()
-            else:
-                time.sleep(0.005)
-
-        while True:
-            chunk = self.core.get_stream_chunk()
-            if not chunk:
-                break
-            full_code.append(chunk)
-            buffer.append(chunk)
-
-        if buffer:
-            self.after(0, self._append_output, ''.join(buffer), end='')
-
-        self.after(0, self._append_output, "\n", end='')
-        return ''.join(full_code)
 
     # ---------- Ручное исправление кода ----------
     def _on_fix_clicked(self):
@@ -373,10 +339,8 @@ class CodeWidget(ttk.Frame):
                 f"Исправь код и верни ТОЛЬКО исправленный код. Без пояснений, без markdown-обёрток."
             )
 
-            if self.core.get_active_provider() == 0:
-                fixed = self._generate_with_stream(error_prompt)
-            else:
-                fixed = self.core.send_message(error_prompt)
+            # Блокирующий вызов для надёжности
+            fixed = self.core.send_message(error_prompt)
 
             if not fixed or fixed.startswith("[Ошибка:"):
                 self.after(0, self._append_output, f"❌ Не удалось получить исправление: {fixed if fixed else 'пустой ответ'}")
