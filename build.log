@@ -10,13 +10,14 @@ warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 > g++ -O2 -shared -o build\vortex_core.dll core\src\api_bridge.cpp core\src\llm_engine.cpp core\src\memory_store.cpp core\src\text_processor.cpp core\src\providers.cpp -DVORTEX_CORE_EXPORTS -std=c++11 -mwindows -static-libgcc -static-libstdc++ -Wl,-Bstatic -lstdc++ -lwinpthread -Wl,-Bdynamic -lws2_32 -lcurl -Icore/include
 
 === Сборка Python-приложения ===
-> python -m PyInstaller --onefile --windowed --noconfirm --add-binary "build/vortex_core.dll;build" --add-data "assets;assets" --add-data "config.json;." vortex.py
+Найден libcurl-4.dll: C:\msys64\ucrt64\bin\libcurl-4.dll
+> python -m PyInstaller --onefile --windowed --noconfirm --add-binary "build/vortex_core.dll;build" --add-binary "build/libcurl-4.dll;build" --add-data "assets;assets" --add-data "config.json;." vortex.py
 97 INFO: PyInstaller: 6.22.2, contrib hooks: 2026.7
 97 INFO: Python: 3.14.7
-114 INFO: Platform: Windows-11-10.0.26200-SP0
-114 INFO: Python environment: C:\Users\Delinor\AppData\Local\Python\pythoncore-3.14-64
-115 INFO: wrote E:\Vortex\vortex.spec
-117 INFO: Module search paths (PYTHONPATH):
+115 INFO: Platform: Windows-11-10.0.26200-SP0
+115 INFO: Python environment: C:\Users\Delinor\AppData\Local\Python\pythoncore-3.14-64
+116 INFO: wrote E:\Vortex\vortex.spec
+118 INFO: Module search paths (PYTHONPATH):
 ['E:\\Vortex',
  'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\python314.zip',
  'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\DLLs',
@@ -25,62 +26,59 @@ warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
  'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages',
  'E:\\Vortex']
 pygame-ce 2.5.8 (SDL 2.32.10, Python 3.14.7)
-356 INFO: Appending 'binaries' from .spec
-356 INFO: Appending 'datas' from .spec
-356 INFO: checking Analysis
-367 INFO: Building because E:\Vortex\build\vortex_core.dll changed
-367 INFO: Looking for Python shared library...
-367 INFO: Using Python shared library: C:\Users\Delinor\AppData\Local\Python\pythoncore-3.14-64\python314.dll
-367 INFO: Running Analysis Analysis-00.toc
-367 INFO: Target bytecode optimization level: 0
-367 INFO: Initializing module dependency graph...
-368 INFO: Initializing module graph hook caches...
-376 INFO: Analyzing modules for base_library.zip ...
-1446 INFO: Processing standard module hook 'hook-encodings.py' from 'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
-1726 INFO: Processing standard module hook 'hook-math.py' from 'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
-2701 INFO: Processing standard module hook 'hook-difflib.py' from 'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
-2710 INFO: Processing standard module hook 'hook-heapq.py' from 'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
-2788 INFO: Processing standard module hook 'hook-pickle.py' from 'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
-3819 INFO: Caching module dependency graph...
-3839 INFO: Analyzing E:\Vortex\vortex.py
-3862 INFO: Processing pre-find-module-path hook 'hook-tkinter.py' from 'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
-3863 INFO: TclTkInfo: initializing cached Tcl/Tk info...
-4079 INFO: Processing standard module hook 'hook-_tkinter.py' from 'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
-4161 INFO: Processing standard module hook 'hook-sysconfig.py' from 'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
-4165 INFO: Processing standard module hook 'hook-_ctypes.py' from 'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
-4221 INFO: Processing module hooks (post-graph stage)...
-4229 INFO: Processing standard module hook 'hook-_tkinter.py' from 'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
-4231 INFO: Performing binary vs. data reclassification (5 entries)
-4232 INFO: Looking for ctypes DLLs
-4243 INFO: Analyzing run-time hooks ...
-4243 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
-4245 INFO: Including run-time hook 'pyi_rth__tkinter.py' from 'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
-4248 INFO: Creating base_library.zip...
-4259 INFO: Looking for dynamic libraries
-4361 INFO: Extra DLL search directories (AddDllDirectory): []
-4361 INFO: Extra DLL search directories (PATH): []
-4569 INFO: Warnings written to E:\Vortex\build\vortex\warn-vortex.txt
-4579 INFO: Graph cross-reference written to E:\Vortex\build\vortex\xref-vortex.html
-4589 INFO: checking PYZ
-4590 INFO: Building because E:\Vortex\gui\minigames.py changed
-4590 INFO: Building PYZ (ZlibArchive) E:\Vortex\build\vortex\PYZ-00.pyz
-4679 INFO: Building PYZ (ZlibArchive) E:\Vortex\build\vortex\PYZ-00.pyz completed successfully.
-4683 INFO: checking PKG
-4693 INFO: Building because toc changed
-4693 INFO: Building PKG (CArchive) vortex.pkg
-6200 INFO: Building PKG (CArchive) vortex.pkg completed successfully.
-6201 INFO: Bootloader C:\Users\Delinor\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\PyInstaller\bootloader\Windows-64bit-intel\runw.exe
-6201 INFO: checking EXE
-6210 INFO: Rebuilding EXE-00.toc because vortex.exe missing
-6210 INFO: Building EXE from EXE-00.toc
-6210 INFO: Copying bootloader EXE to E:\Vortex\dist\vortex.exe
-6239 INFO: Copying icon to EXE
-6261 INFO: Copying 0 resources to EXE
-6261 INFO: Embedding manifest in EXE
-6283 INFO: Appending PKG archive to EXE
-6318 INFO: Fixing EXE headers
-6497 INFO: Building EXE from EXE-00.toc completed successfully.
-6498 INFO: Build complete! The results are available in: E:\Vortex\dist
+373 INFO: Appending 'binaries' from .spec
+373 INFO: Appending 'datas' from .spec
+373 INFO: checking Analysis
+383 INFO: Building because _input_binaries changed
+383 INFO: Looking for Python shared library...
+383 INFO: Using Python shared library: C:\Users\Delinor\AppData\Local\Python\pythoncore-3.14-64\python314.dll
+383 INFO: Running Analysis Analysis-00.toc
+383 INFO: Target bytecode optimization level: 0
+383 INFO: Initializing module dependency graph...
+384 INFO: Initializing module graph hook caches...
+394 INFO: Analyzing modules for base_library.zip ...
+1523 INFO: Processing standard module hook 'hook-encodings.py' from 'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+1890 INFO: Processing standard module hook 'hook-pickle.py' from 'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+2063 INFO: Processing standard module hook 'hook-math.py' from 'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+2156 INFO: Processing standard module hook 'hook-difflib.py' from 'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+2165 INFO: Processing standard module hook 'hook-heapq.py' from 'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+3931 INFO: Caching module dependency graph...
+3950 INFO: Analyzing E:\Vortex\vortex.py
+3975 INFO: Processing pre-find-module-path hook 'hook-tkinter.py' from 'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+3976 INFO: TclTkInfo: initializing cached Tcl/Tk info...
+4183 INFO: Processing standard module hook 'hook-_tkinter.py' from 'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+4266 INFO: Processing standard module hook 'hook-sysconfig.py' from 'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+4269 INFO: Processing standard module hook 'hook-_ctypes.py' from 'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+4329 INFO: Processing module hooks (post-graph stage)...
+4337 INFO: Processing standard module hook 'hook-_tkinter.py' from 'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+4339 INFO: Performing binary vs. data reclassification (6 entries)
+4341 INFO: Looking for ctypes DLLs
+4351 INFO: Analyzing run-time hooks ...
+4352 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+4354 INFO: Including run-time hook 'pyi_rth__tkinter.py' from 'C:\\Users\\Delinor\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+4356 INFO: Creating base_library.zip...
+4369 INFO: Looking for dynamic libraries
+4473 INFO: Extra DLL search directories (AddDllDirectory): []
+4473 INFO: Extra DLL search directories (PATH): []
+5261 INFO: Warnings written to E:\Vortex\build\vortex\warn-vortex.txt
+5271 INFO: Graph cross-reference written to E:\Vortex\build\vortex\xref-vortex.html
+5282 INFO: checking PYZ
+5285 INFO: checking PKG
+5292 INFO: Building because toc changed
+5292 INFO: Building PKG (CArchive) vortex.pkg
+6845 INFO: Building PKG (CArchive) vortex.pkg completed successfully.
+6846 INFO: Bootloader C:\Users\Delinor\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\PyInstaller\bootloader\Windows-64bit-intel\runw.exe
+6846 INFO: checking EXE
+6853 INFO: Rebuilding EXE-00.toc because vortex.exe missing
+6853 INFO: Building EXE from EXE-00.toc
+6854 INFO: Copying bootloader EXE to E:\Vortex\dist\vortex.exe
+6878 INFO: Copying icon to EXE
+6900 INFO: Copying 0 resources to EXE
+6900 INFO: Embedding manifest in EXE
+6922 INFO: Appending PKG archive to EXE
+6956 INFO: Fixing EXE headers
+7160 INFO: Building EXE from EXE-00.toc completed successfully.
+7161 INFO: Build complete! The results are available in: E:\Vortex\dist
 
 === Сборка лаунчера ===
 > g++ -O2 vortex_launcher.cpp -o Vortex.exe -municode -mwindows -static -lole32 -lshell32 -luuid -lshlwapi -lcomctl32

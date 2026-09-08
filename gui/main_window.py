@@ -11,6 +11,7 @@ import base64
 import shutil
 import subprocess
 import tempfile
+import re
 from .core_wrapper import VortexCore
 from .chat_widget import ChatWidget
 from .code_widget import CodeWidget
@@ -32,6 +33,7 @@ class MainWindow(tk.Tk):
         self.music_volume = 100
         self.warmup_done = False
         self.current_theme = "Тёмная"
+        self.streaming_active = False
 
         self.minigame_window = None
         self.minigame_after_id = None
@@ -54,7 +56,6 @@ class MainWindow(tk.Tk):
         except:
             pass
 
-        # Запускаем прогрев с экраном загрузки, но ввод разрешён
         self._start_warmup()
 
     # ---------- Вспомогательные методы ----------
@@ -206,15 +207,12 @@ class MainWindow(tk.Tk):
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill=tk.BOTH, expand=True)
 
-        # Вкладка "Чат"
         self.chat_frame = ttk.Frame(self.notebook)
         self.notebook.add(self.chat_frame, text="Чат")
 
-        # Вкладка "Код"
         self.code_widget = CodeWidget(self.notebook, self.core, app_dir=self._get_app_dir())
         self.notebook.add(self.code_widget, text="Код")
 
-        # Вкладка "Плагины"
         self.plugins_frame = ttk.Frame(self.notebook)
         self.notebook.add(self.plugins_frame, text="Плагины")
         self._build_plugins_ui()
@@ -259,19 +257,44 @@ class MainWindow(tk.Tk):
                                       style="Accent.TButton", command=self._send)
         self.send_button.pack(side=tk.LEFT, padx=(8,0))
 
-        mode_frame = ttk.Frame(self.chat_frame)
-        mode_frame.pack(fill=tk.X, padx=12, pady=(0, 5))
+        # Кнопка остановки генерации
+        self.stop_button = ttk.Button(bottom, text="Стоп",
+                                      style="Accent.TButton", command=self._stop_generation)
+        self.stop_button.pack(side=tk.LEFT, padx=(8,0))
+        self.stop_button.pack_forget()
 
-        ttk.Label(mode_frame, text="Режим:", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(0, 5))
-        self.mode_buttons = {}
-        self.mode_var = tk.StringVar(value="normal")
-        for text, mode in [("Instant", "instant"), ("Normal", "normal"), ("Thinking", "thinking")]:
-            btn = ttk.Button(mode_frame, text=text,
-                             command=lambda m=mode: self._set_generation_mode(m))
+        # Панель выбора характера
+        character_frame = ttk.Frame(self.chat_frame)
+        character_frame.pack(fill=tk.X, padx=12, pady=(0, 5))
+
+        ttk.Label(character_frame, text="Характер:", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(0, 5))
+        self.character_buttons = {}
+        self.character_var = tk.StringVar(value="default")
+        for text, mode in [("Обычный", "default"), ("Креативный", "creative"),
+                           ("Формальный", "formal"), ("Лаконичный", "concise")]:
+            btn = ttk.Button(character_frame, text=text,
+                             command=lambda m=mode: self._set_character(m))
             btn.pack(side=tk.LEFT, padx=2)
-            self.mode_buttons[mode] = btn
+            self.character_buttons[mode] = btn
 
-        self._update_mode_buttons()
+        # Панель выбора длины ответа
+        length_frame = ttk.Frame(self.chat_frame)
+        length_frame.pack(fill=tk.X, padx=12, pady=(0, 5))
+
+        ttk.Label(length_frame, text="Длина:", font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(0, 5))
+        self.length_buttons = {}
+        self.length_var = tk.StringVar(value="normal")
+        for text, gen_mode in [("Короткий", "instant"), ("Средний", "normal"),
+                               ("Длинный", "thinking"), ("Без лимита", "thinking")]:
+            btn = ttk.Button(length_frame, text=text,
+                             command=lambda g=gen_mode: self._set_response_length(g))
+            btn.pack(side=tk.LEFT, padx=2)
+            if text == "Без лимита":
+                self.length_buttons["unlimited"] = btn
+            else:
+                self.length_buttons[gen_mode] = btn
+
+        self._update_style_buttons()
 
     def _build_plugins_ui(self):
         ttk.Label(self.plugins_frame, text="Среды выполнения", font=("Segoe UI", 12, "bold")).pack(anchor='w', padx=10, pady=5)
@@ -322,16 +345,28 @@ class MainWindow(tk.Tk):
             messagebox.showerror("Vortex", f"Не удалось установить {runtime.name}. Попробуйте вручную.")
         self._refresh_runtime_list()
 
-    # ---------- Режимы генерации ----------
-    def _set_generation_mode(self, mode):
-        self.core.set_generation_mode(mode)
-        self.mode_var.set(mode)
-        self._update_mode_buttons()
+    # ---------- Новые методы выбора характера и длины ----------
+    def _set_character(self, mode):
+        self.core.set_mode(mode)
+        self.character_var.set(mode)
+        self._update_style_buttons()
 
-    def _update_mode_buttons(self):
-        current = self.core.get_current_generation_mode() or "normal"
-        for mode, btn in self.mode_buttons.items():
-            if mode == current:
+    def _set_response_length(self, gen_mode):
+        self.core.set_generation_mode(gen_mode)
+        self.length_var.set(gen_mode)
+        self._update_style_buttons()
+
+    def _update_style_buttons(self):
+        current_character = self.core.get_current_mode() or "default"
+        for mode, btn in self.character_buttons.items():
+            if mode == current_character:
+                btn.configure(style="Accent.TButton")
+            else:
+                btn.configure(style="TButton")
+
+        current_length = self.core.get_current_generation_mode() or "normal"
+        for key, btn in self.length_buttons.items():
+            if key == current_length or (key == "unlimited" and current_length == "thinking"):
                 btn.configure(style="Accent.TButton")
             else:
                 btn.configure(style="TButton")
@@ -339,10 +374,9 @@ class MainWindow(tk.Tk):
     # ---------- Экран загрузки и прогрев ----------
     def _start_warmup(self):
         self._show_loading_overlay()
-        self._set_input_state(True)   # разрешаем ввод сразу
+        self._set_input_state(True)
         self._start_progress()
 
-        # Таймер для мини-игры при долгом прогреве
         self.warmup_minigame_after_id = self.after(10000, self._show_minigame_during_warmup)
 
         def warmup():
@@ -363,7 +397,6 @@ class MainWindow(tk.Tk):
         if self.minigame_window:
             self._on_minigame_close()
 
-        # Прогресс-бар на 100%
         if hasattr(self, 'loading_progress'):
             self.loading_progress['value'] = 100
             self.loading_progress.update_idletasks()
@@ -389,7 +422,6 @@ class MainWindow(tk.Tk):
                                      font=("Segoe UI", 14), fg="#e0e0e0", bg="#121212")
         self.loading_text.pack(pady=10)
 
-        # Прогресс-бар
         self.loading_progress = ttk.Progressbar(self.loading_overlay, mode='determinate', maximum=100)
         self.loading_progress.pack(pady=20, padx=50, fill=tk.X)
         self.loading_progress_value = 0
@@ -487,7 +519,6 @@ class MainWindow(tk.Tk):
             messagebox.showerror("Ошибка", str(e))
 
     def _delete_chat(self):
-        # Разрешаем удаление любого чата (включая Default)
         if self.current_chat_id < 0:
             return
         if messagebox.askyesno("Подтверждение", "Удалить текущий чат?"):
@@ -579,8 +610,7 @@ class MainWindow(tk.Tk):
         self.entry.delete(0, tk.END)
         self._append_message("Вы", msg, "user")
         self._start_progress()
-        self.send_button.config(state=tk.DISABLED)
-        self.attach_button.config(state=tk.DISABLED)
+        self._set_generation_ui(True)
 
         self.attachments.clear()
         if hasattr(self, 'attachment_label'):
@@ -593,17 +623,17 @@ class MainWindow(tk.Tk):
         try:
             if images_base64:
                 response = self.core.send_message_with_images(msg, images_base64)
+                self.after(0, self._on_response_received, response)
             else:
                 if self.core.get_active_provider() == 0:  # Ollama
+                    self.streaming_active = True
+                    self._stream_buffer = ""       # буфер для накопления
                     self.core.start_stream(msg)
                     self.after(0, self._start_stream_message)
                     self.after(50, self._poll_stream_chunks)
-                    return
                 else:
                     response = self.core.send_message(msg)
-            if response is None:
-                response = "[Ошибка: не удалось получить ответ]"
-            self.after(0, self._on_response_received, response)
+                    self.after(0, self._on_response_received, response)
         except Exception as e:
             print(f"[DEBUG] Ошибка в потоке: {e}")
             self.after(0, self._on_error, str(e))
@@ -618,35 +648,58 @@ class MainWindow(tk.Tk):
         self.chat_widget.start_stream_message("Vortex", "assistant")
 
     def _poll_stream_chunks(self):
-        if not self.core.is_generating():
-            chunk = self.core.get_stream_chunk()
-            if chunk:
-                self.chat_widget.append_stream_chunk(chunk, "assistant")
-            self.chat_widget.append_stream_chunk("\n\n", "assistant")
-            self.send_button.config(state=tk.NORMAL)
-            self.attach_button.config(state=tk.NORMAL)
-            self._stop_progress()
+        if not self.streaming_active:
             return
 
-        chunk = self.core.get_stream_chunk()
-        if chunk:
-            self.chat_widget.append_stream_chunk(chunk, "assistant")
+        # Собираем все доступные чанки
+        while True:
+            chunk = self.core.get_stream_chunk()
+            if chunk is None:
+                break
+            self._stream_buffer += chunk
+
+        if not self.core.is_generating():
+            # Генерация завершена: вставляем весь ответ с Markdown
+            response = self._stream_buffer
+            self._stream_buffer = ""
+            self.streaming_active = False
+            self._finish_generation()
+            self._append_message("Vortex", response, "assistant", animated=False)
+            return
 
         self.after(50, self._poll_stream_chunks)
 
     def _on_response_received(self, response):
         print("[DEBUG] Ответ получен в UI")
         self._stop_progress()
-        self._append_message("Vortex", response, "assistant", animated=True)
-        self.send_button.config(state=tk.NORMAL)
-        self.attach_button.config(state=tk.NORMAL)
+        self._append_message("Vortex", response, "assistant", animated=False)
+        self._finish_generation()
 
     def _on_error(self, error_msg):
         print(f"[DEBUG] Обработка ошибки: {error_msg}")
         self._stop_progress()
         self._append_message("Vortex", f"[Ошибка: {error_msg}]", "system")
+        self._finish_generation()
+
+    def _set_generation_ui(self, generating):
+        if generating:
+            self.send_button.pack_forget()
+            self.stop_button.pack(side=tk.LEFT, padx=(8,0))
+        else:
+            self.stop_button.pack_forget()
+            self.send_button.pack(side=tk.LEFT, padx=(8,0))
+
+    def _finish_generation(self):
+        self.streaming_active = False
+        self._stop_progress()
+        self._set_generation_ui(False)
         self.send_button.config(state=tk.NORMAL)
         self.attach_button.config(state=tk.NORMAL)
+
+    def _stop_generation(self):
+        self.streaming_active = False
+        self._stream_buffer = ""
+        self._finish_generation()
 
     # ---------- Мини-игры ----------
     def _start_minigame_timer(self):

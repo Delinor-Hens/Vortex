@@ -134,6 +134,24 @@ class VortexCore:
             except json.JSONDecodeError:
                 return []
         return []
+        # ---------- Продвинутый режим ----------
+    def set_custom_params(self, temperature, num_predict, top_p):
+        """Устанавливает пользовательские параметры генерации."""
+        self.dll.vortex_set_custom_params.argtypes = [ctypes.c_double, ctypes.c_int, ctypes.c_double]
+        self.dll.vortex_set_custom_params.restype = None
+        self.dll.vortex_set_custom_params(temperature, num_predict, top_p)
+
+    def clear_custom_params(self):
+        """Сбрасывает пользовательские параметры генерации."""
+        self.dll.vortex_clear_custom_params.argtypes = []
+        self.dll.vortex_clear_custom_params.restype = None
+        self.dll.vortex_clear_custom_params()
+
+    def get_custom_params(self):
+        """Возвращает текущие пользовательские параметры (если установлены)."""
+        # Может быть не реализовано в DLL, поэтому можно хранить локально
+        # Для простоты возвращаем None, если не знаем
+        return None
 
     def pull_model(self, model_name):
         return self.dll.vortex_pull_model(model_name.encode('utf-8'))

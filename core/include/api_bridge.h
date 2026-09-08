@@ -49,6 +49,10 @@ VORTEX_API int vortex_set_provider_config(int provider_type,
 VORTEX_API char* vortex_get_provider_list();
 VORTEX_API char* vortex_get_active_provider_info();
 
+// Новые функции для продвинутого режима
+VORTEX_API void vortex_set_custom_params(double temperature, int num_predict, double top_p);
+VORTEX_API void vortex_clear_custom_params();
+
 VORTEX_API void vortex_free_string(char* str);
 
 #ifdef __cplusplus

@@ -1,17 +1,24 @@
 // build_gui.cpp
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <commctrl.h>
 #include <shellapi.h>
 #include <string>
 #include <filesystem>
+#include <thread>
+
+#pragma comment(lib, "comctl32.lib")
 
 namespace fs = std::filesystem;
 
+HWND hProgressBar = nullptr;
+HWND hStatusText = nullptr;
+HWND hNoArchiveCheck = nullptr;
+
 void RunBuild(const char* target, bool noArchive);
 void ShowLog();
-
-// Глобальная переменная для чекбокса
-HWND hNoArchiveCheck = nullptr;
+void StartBuildThread(const char* target, bool noArchive);
+void UpdateProgress(bool active);
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
@@ -33,18 +40,28 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                                             WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
                                             20, 220, 200, 25, hWnd, NULL, NULL, NULL);
 
+            // Прогресс-бар
+            hProgressBar = CreateWindowW(PROGRESS_CLASSW, NULL,
+                                         WS_CHILD | WS_VISIBLE | PBS_MARQUEE,
+                                         20, 250, 200, 20, hWnd, NULL, NULL, NULL);
+            SendMessageW(hProgressBar, PBM_SETMARQUEE, TRUE, 30);
+
+            hStatusText = CreateWindowW(L"STATIC", L"Готов к сборке",
+                                        WS_CHILD | WS_VISIBLE | SS_LEFT,
+                                        20, 275, 200, 20, hWnd, NULL, NULL, NULL);
+
             CreateWindowW(L"BUTTON", L"Открыть лог",
                           WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                          20, 250, 150, 30, hWnd, (HMENU)5, NULL, NULL);
+                          20, 300, 150, 30, hWnd, (HMENU)5, NULL, NULL);
             break;
         }
         case WM_COMMAND: {
             int id = LOWORD(wParam);
             bool noArchive = (SendMessageW(hNoArchiveCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
             switch (id) {
-                case 1: RunBuild("windows", noArchive); break;
-                case 2: RunBuild("linux", false); break;
-                case 3: RunBuild("macos", false); break;
+                case 1: StartBuildThread("windows", noArchive); break;
+                case 2: StartBuildThread("linux", false); break;
+                case 3: StartBuildThread("macos", false); break;
                 case 4: MessageBoxW(hWnd, L"Сборка под Android пока не поддерживается.",
                                     L"Информация", MB_ICONINFORMATION); break;
                 case 5: ShowLog(); break;
@@ -66,6 +83,25 @@ void ShowLog() {
     } else {
         MessageBoxW(NULL, L"Лог-файл build.log не найден.", L"Информация", MB_ICONINFORMATION);
     }
+}
+
+void UpdateProgress(bool active) {
+    if (hProgressBar) {
+        SendMessageW(hProgressBar, PBM_SETMARQUEE, active ? TRUE : FALSE, 30);
+    }
+}
+
+void StartBuildThread(const char* target, bool noArchive) {
+    std::thread buildThread([target, noArchive]() {
+        UpdateProgress(true);
+        if (hStatusText) SetWindowTextW(hStatusText, L"Идёт сборка...");
+
+        RunBuild(target, noArchive);
+
+        UpdateProgress(false);
+        if (hStatusText) SetWindowTextW(hStatusText, L"Готово");
+    });
+    buildThread.detach();
 }
 
 void RunBuild(const char* target, bool noArchive) {
@@ -114,6 +150,10 @@ void RunBuild(const char* target, bool noArchive) {
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, int nCmdShow) {
+    // Инициализация common controls для прогресс-бара
+    INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_PROGRESS_CLASS };
+    InitCommonControlsEx(&icc);
+
     WNDCLASSW wc = {0};
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInstance;
@@ -124,7 +164,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLin
 
     HWND hWnd = CreateWindowW(L"BuildToolGUI", L"Vortex Build Tool",
                               WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-                              CW_USEDEFAULT, CW_USEDEFAULT, 250, 310,
+                              CW_USEDEFAULT, CW_USEDEFAULT, 270, 380,
                               NULL, NULL, hInstance, NULL);
     if (!hWnd) return 0;
 

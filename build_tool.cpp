@@ -43,6 +43,46 @@ bool runCommand(const std::string& cmd) {
     return result == 0;
 }
 
+// Поиск и копирование libcurl-4.dll в папку build (если требуется)
+bool ensureLibcurlDll() {
+    fs::path buildDir = fs::path("build");
+    fs::create_directories(buildDir);
+    fs::path target = buildDir / "libcurl-4.dll";
+
+    if (fs::exists(target)) {
+        std::cout << "libcurl-4.dll уже в build.\n";
+        return true;
+    }
+
+    // Попытка найти в стандартных местах MinGW
+    std::vector<std::wstring> searchPaths = {
+        L"C:\\msys64\\ucrt64\\bin\\libcurl-4.dll",
+        L"C:\\msys64\\mingw64\\bin\\libcurl-4.dll",
+        L"C:\\msys64\\clang64\\bin\\libcurl-4.dll"
+    };
+
+    for (const auto& p : searchPaths) {
+        if (fs::exists(p)) {
+            std::cout << "Найден libcurl-4.dll: " << std::string(p.begin(), p.end()) << "\n";
+            fs::copy(p, target, fs::copy_options::overwrite_existing);
+            return true;
+        }
+    }
+
+    // Рекурсивный поиск на диске C: (медленно, но надёжно)
+    std::cout << "Поиск libcurl-4.dll на диске C:...\n";
+    for (const auto& entry : fs::recursive_directory_iterator("C:\\", fs::directory_options::skip_permission_denied)) {
+        if (entry.is_regular_file() && entry.path().filename() == "libcurl-4.dll") {
+            std::cout << "Найден: " << entry.path() << "\n";
+            fs::copy(entry.path(), target, fs::copy_options::overwrite_existing);
+            return true;
+        }
+    }
+
+    std::cerr << "Ошибка: libcurl-4.dll не найден. Установите libcurl или скопируйте его в build вручную.\n";
+    return false;
+}
+
 // Упаковка папки Vortex в data0/data1 (без GUI)
 bool packVortexFolder(const std::string& vortexFolder,
                       const std::string& data0Path,
@@ -134,8 +174,15 @@ bool buildPythonApp(OS os) {
     if (os != OS::Windows) {
         return true;
     }
+
+    // Убедимся, что libcurl-4.dll скопирован в build
+    if (!ensureLibcurlDll()) {
+        return false;
+    }
+
     std::string cmd = "python -m PyInstaller --onefile --windowed --noconfirm "
                       "--add-binary \"build/vortex_core.dll;build\" "
+                      "--add-binary \"build/libcurl-4.dll;build\" "
                       "--add-data \"assets;assets\" --add-data \"config.json;.\" vortex.py";
     bool ok = runCommand(cmd);
     if (ok) {
@@ -166,6 +213,10 @@ bool createWindowsInstaller() {
 
     fs::copy("dist/vortex.exe", tempVortex / "vortex.exe", fs::copy_options::overwrite_existing);
     fs::copy("build/vortex_core.dll", tempVortex / "vortex_core.dll", fs::copy_options::overwrite_existing);
+    // Копируем libcurl-4.dll, если она есть в build
+    if (fs::exists("build/libcurl-4.dll")) {
+        fs::copy("build/libcurl-4.dll", tempVortex / "libcurl-4.dll", fs::copy_options::overwrite_existing);
+    }
     fs::copy("assets", tempVortex / "assets", fs::copy_options::recursive | fs::copy_options::overwrite_existing);
     fs::copy("config.json", tempVortex / "config.json", fs::copy_options::overwrite_existing);
 
@@ -189,6 +240,9 @@ bool createPortableWindows() {
 
     fs::copy("dist/vortex.exe", tempVortex / "vortex.exe", fs::copy_options::overwrite_existing);
     fs::copy("build/vortex_core.dll", tempVortex / "vortex_core.dll", fs::copy_options::overwrite_existing);
+    if (fs::exists("build/libcurl-4.dll")) {
+        fs::copy("build/libcurl-4.dll", tempVortex / "libcurl-4.dll", fs::copy_options::overwrite_existing);
+    }
     fs::copy("assets", tempVortex / "assets", fs::copy_options::recursive | fs::copy_options::overwrite_existing);
     fs::copy("config.json", tempVortex / "config.json", fs::copy_options::overwrite_existing);
 
@@ -323,7 +377,6 @@ int main(int argc, char* argv[]) {
                 fs::copy("data1", targetDir / "data1", fs::copy_options::overwrite_existing);
                 fs::copy("Vortex.exe", targetDir / "Vortex.exe", fs::copy_options::overwrite_existing);
             } else {
-                // Копируем папку portable_vortex
                 fs::copy("build/portable_vortex", targetDir / "Vortex", fs::copy_options::recursive | fs::copy_options::overwrite_existing);
             }
         } catch (...) {

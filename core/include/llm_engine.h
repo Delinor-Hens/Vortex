@@ -19,6 +19,23 @@ std::wstring generateBlockingWithImages(const std::wstring& model,
                                         const std::wstring& generationMode,
                                         std::wstring* errorMsg);
 
+std::wstring generateBlockingWithParams(const std::wstring& model,
+                                        const std::wstring& prompt,
+                                        const std::wstring& systemPrompt,
+                                        double temperature,
+                                        int numPredict,
+                                        double topP,
+                                        std::wstring* errorMsg);
+
+std::wstring generateBlockingWithImagesWithParams(const std::wstring& model,
+                                                  const std::wstring& prompt,
+                                                  const std::wstring& systemPrompt,
+                                                  const std::vector<std::string>& imagesBase64,
+                                                  double temperature,
+                                                  int numPredict,
+                                                  double topP,
+                                                  std::wstring* errorMsg);
+
 bool generateStreamingOllama(const std::wstring& model,
                              const std::wstring& prompt,
                              const std::wstring& systemPrompt,
@@ -26,7 +43,15 @@ bool generateStreamingOllama(const std::wstring& model,
                              std::function<void(const std::wstring&)> chunkCallback,
                              std::wstring* errorMsg);
 
-// Новая функция быстрого прогрева модели
+bool generateStreamingOllamaWithParams(const std::wstring& model,
+                                       const std::wstring& prompt,
+                                       const std::wstring& systemPrompt,
+                                       double temperature,
+                                       int numPredict,
+                                       double topP,
+                                       std::function<void(const std::wstring&)> chunkCallback,
+                                       std::wstring* errorMsg);
+
 bool generateWarmup(const std::wstring& model,
                     const std::wstring& systemPrompt,
                     std::wstring* errorMsg);

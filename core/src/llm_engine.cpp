@@ -16,6 +16,7 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <algorithm>
 
 #pragma comment(lib, "kernel32")
 #pragma comment(lib, "user32")
@@ -92,7 +93,7 @@ static std::string wstring_to_utf8(const std::wstring& wstr) {
     return result;
 }
 
-// ==================== Декодирование \uXXXX ====================
+// ==================== Декодирование \uXXXX и сохранение слэшей ====================
 static std::string decodeUnicodeEscape(const std::string& input) {
     std::string output;
     for (size_t i = 0; i < input.length(); ++i) {
@@ -118,15 +119,16 @@ static std::string decodeUnicodeEscape(const std::string& input) {
                     continue;
                 }
             }
+            // Обработка обычных escape-символов
             switch (input[i+1]) {
                 case 'n': output += '\n'; i++; break;
                 case 't': output += '\t'; i++; break;
                 case 'r': output += '\r'; i++; break;
                 case '\\': output += '\\'; i++; break;
                 case '"': output += '"'; i++; break;
-                case 'b': output += '\b'; i++; break;
-                case 'f': output += '\f'; i++; break;
-                default: output += input[i]; break;
+                case 'b': output += '\\'; output += 'b'; i++; break;   // сохраняем \b
+                case 'f': output += '\\'; output += 'f'; i++; break;   // сохраняем \f
+                default: output += '\\'; output += input[i+1]; i++; break; // сохраняем слэш и символ
             }
             continue;
         }
@@ -152,8 +154,8 @@ static std::wstring extractResponse(const std::string& json) {
                 case 'r': answer += '\r'; break;
                 case '\\': answer += '\\'; break;
                 case '"': answer += '"'; break;
-                case 'b': answer += '\b'; break;
-                case 'f': answer += '\f'; break;
+                case 'b': answer += '\\'; answer += 'b'; break;   // сохраняем \b
+                case 'f': answer += '\\'; answer += 'f'; break;   // сохраняем \f
                 case 'u': {
                     if (i + 4 < json.length()) {
                         std::string hex = json.substr(i+1, 4);
@@ -181,7 +183,7 @@ static std::wstring extractResponse(const std::string& json) {
                     }
                     break;
                 }
-                default: answer += c;
+                default: answer += '\\'; answer += c; break;  // сохраняем обратный слэш
             }
             escaped = false;
         } else {
@@ -257,13 +259,15 @@ static std::string httpPostOllamaGenerate(const std::string& body) {
     return response.substr(pos + 4);
 }
 
-// Общая функция генерации (с изображениями или без)
-static std::wstring generateBlockingInternal(const std::wstring& model,
-                                             const std::wstring& prompt,
-                                             const std::wstring& systemPrompt,
-                                             const std::vector<std::string>& imagesBase64,
-                                             const std::wstring& generationMode,
-                                             std::wstring* errorMsg) {
+// Общая функция генерации (без изображений) с явными параметрами
+static std::wstring generateBlockingInternalWithParams(const std::wstring& model,
+                                                       const std::wstring& prompt,
+                                                       const std::wstring& systemPrompt,
+                                                       const std::vector<std::string>* imagesBase64,
+                                                       double temperature,
+                                                       int numPredict,
+                                                       double topP,
+                                                       std::wstring* errorMsg) {
     ensureNetworkInitialized();
 
     std::string utf8model = wstring_to_utf8(model);
@@ -298,17 +302,6 @@ static std::wstring generateBlockingInternal(const std::wstring& model,
     std::string escapedPrompt = jsonEscape(utf8prompt);
     std::string escapedSystem = jsonEscape(utf8system);
 
-    int numPredict = 256;
-    double temperature = 0.6;
-    double topP = 0.9;
-    if (generationMode == L"instant") {
-        numPredict = 128; temperature = 0.8; topP = 0.9;
-    } else if (generationMode == L"normal") {
-        numPredict = 256; temperature = 0.6; topP = 0.9;
-    } else if (generationMode == L"thinking") {
-        numPredict = -1; temperature = 0.3; topP = 0.9; // без ограничения
-    }
-
     std::string jsonBody = "{\"model\":\"" + escapedModel +
                            "\",\"prompt\":\"" + escapedPrompt +
                            "\",\"stream\":false,\"think\":false,\"system\":\"" + escapedSystem +
@@ -316,13 +309,13 @@ static std::wstring generateBlockingInternal(const std::wstring& model,
                            ",\"temperature\":" + std::to_string(temperature) +
                            ",\"top_p\":" + std::to_string(topP) + "}}";
 
-    if (!imagesBase64.empty()) {
+    if (imagesBase64 && !imagesBase64->empty()) {
         size_t pos = jsonBody.find("\"options\"");
         if (pos != std::string::npos) {
             std::string imagesJson = "\"images\":[";
-            for (size_t i = 0; i < imagesBase64.size(); ++i) {
+            for (size_t i = 0; i < imagesBase64->size(); ++i) {
                 if (i > 0) imagesJson += ",";
-                imagesJson += "\"" + imagesBase64[i] + "\"";
+                imagesJson += "\"" + (*imagesBase64)[i] + "\"";
             }
             imagesJson += "],";
             jsonBody.insert(pos, imagesJson);
@@ -394,7 +387,14 @@ std::wstring generateBlocking(const std::wstring& model,
                               const std::wstring& systemPrompt,
                               const std::wstring& generationMode,
                               std::wstring* errorMsg) {
-    return generateBlockingInternal(model, prompt, systemPrompt, {}, generationMode, errorMsg);
+    int numPredict = 256;
+    double temperature = 0.6;
+    double topP = 0.9;
+    if (generationMode == L"instant") { numPredict = 128; temperature = 0.8; }
+    else if (generationMode == L"normal") { numPredict = 256; temperature = 0.6; }
+    else if (generationMode == L"thinking") { numPredict = -1; temperature = 0.3; }
+    return generateBlockingInternalWithParams(model, prompt, systemPrompt, nullptr,
+                                              temperature, numPredict, topP, errorMsg);
 }
 
 std::wstring generateBlockingWithImages(const std::wstring& model,
@@ -403,7 +403,37 @@ std::wstring generateBlockingWithImages(const std::wstring& model,
                                         const std::vector<std::string>& imagesBase64,
                                         const std::wstring& generationMode,
                                         std::wstring* errorMsg) {
-    return generateBlockingInternal(model, prompt, systemPrompt, imagesBase64, generationMode, errorMsg);
+    int numPredict = 256;
+    double temperature = 0.6;
+    double topP = 0.9;
+    if (generationMode == L"instant") { numPredict = 128; temperature = 0.8; }
+    else if (generationMode == L"normal") { numPredict = 256; temperature = 0.6; }
+    else if (generationMode == L"thinking") { numPredict = -1; temperature = 0.3; }
+    return generateBlockingInternalWithParams(model, prompt, systemPrompt, &imagesBase64,
+                                              temperature, numPredict, topP, errorMsg);
+}
+
+std::wstring generateBlockingWithParams(const std::wstring& model,
+                                        const std::wstring& prompt,
+                                        const std::wstring& systemPrompt,
+                                        double temperature,
+                                        int numPredict,
+                                        double topP,
+                                        std::wstring* errorMsg) {
+    return generateBlockingInternalWithParams(model, prompt, systemPrompt, nullptr,
+                                              temperature, numPredict, topP, errorMsg);
+}
+
+std::wstring generateBlockingWithImagesWithParams(const std::wstring& model,
+                                                  const std::wstring& prompt,
+                                                  const std::wstring& systemPrompt,
+                                                  const std::vector<std::string>& imagesBase64,
+                                                  double temperature,
+                                                  int numPredict,
+                                                  double topP,
+                                                  std::wstring* errorMsg) {
+    return generateBlockingInternalWithParams(model, prompt, systemPrompt, &imagesBase64,
+                                              temperature, numPredict, topP, errorMsg);
 }
 
 bool generateStreamingOllama(const std::wstring& model,
@@ -412,6 +442,25 @@ bool generateStreamingOllama(const std::wstring& model,
                              const std::wstring& generationMode,
                              std::function<void(const std::wstring&)> chunkCallback,
                              std::wstring* errorMsg) {
+    int numPredict = 256;
+    double temperature = 0.6;
+    double topP = 0.9;
+    if (generationMode == L"instant") { numPredict = 128; temperature = 0.8; }
+    else if (generationMode == L"normal") { numPredict = 256; temperature = 0.6; }
+    else if (generationMode == L"thinking") { numPredict = -1; temperature = 0.3; }
+    return generateStreamingOllamaWithParams(model, prompt, systemPrompt,
+                                             temperature, numPredict, topP,
+                                             chunkCallback, errorMsg);
+}
+
+bool generateStreamingOllamaWithParams(const std::wstring& model,
+                                       const std::wstring& prompt,
+                                       const std::wstring& systemPrompt,
+                                       double temperature,
+                                       int numPredict,
+                                       double topP,
+                                       std::function<void(const std::wstring&)> chunkCallback,
+                                       std::wstring* errorMsg) {
     ensureNetworkInitialized();
 
     std::string utf8model = wstring_to_utf8(model);
@@ -445,13 +494,6 @@ bool generateStreamingOllama(const std::wstring& model,
     std::string escapedModel = jsonEscape(utf8model);
     std::string escapedPrompt = jsonEscape(utf8prompt);
     std::string escapedSystem = jsonEscape(utf8system);
-
-    int numPredict = 256;
-    double temperature = 0.6;
-    double topP = 0.9;
-    if (generationMode == L"instant") { numPredict = 128; temperature = 0.8; }
-    else if (generationMode == L"normal") { numPredict = 256; temperature = 0.6; }
-    else if (generationMode == L"thinking") { numPredict = -1; temperature = 0.3; }
 
     std::string jsonBody = "{\"model\":\"" + escapedModel +
                            "\",\"prompt\":\"" + escapedPrompt +
@@ -523,7 +565,6 @@ bool generateStreamingOllama(const std::wstring& model,
     return true;
 }
 
-// Быстрый прогрев модели
 bool generateWarmup(const std::wstring& model, const std::wstring& systemPrompt, std::wstring* errorMsg) {
     ensureNetworkInitialized();
 
